@@ -131,8 +131,17 @@ def cmd_pops(args):
     pop_energy = [float(s[s > args.threshold].sum() / pixels) for s in scores]
     shimmer_energy = [float(r.mean()) for r in res]
     out = _out(args, f"pops-{source.path.stem}")
-    pops.timeline(pop_energy, shimmer_energy, speeds, events, source.fps, start, out / "timeline.png")
     probes = source.probes()
+    x = None
+    if args.x_probe:
+        def value(frame):
+            v = probes.get(frame)
+            return v.get(args.x_probe) if isinstance(v, dict) else v
+        x = [value(i + 1 + start) for i in range(len(pop_energy))]
+        if any(v is None for v in x):
+            raise SystemExit(f"--x-probe {args.x_probe}: missing in frames.jsonl for some frames")
+    pops.timeline(pop_energy, shimmer_energy, speeds, events, source.fps, start, out / "timeline.png", x,
+                  args.x_probe or "time (s)", args.log_x, args.invert_x, args.title or "")
 
     def note(frame: int) -> str:
         value = probes.get(frame)
@@ -303,6 +312,10 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--preset", default="medium", choices=["ultrafast", "fast", "medium"], help="optical flow quality")
     q.add_argument("--top", type=int, default=6, help="events shown in the sheet")
     q.add_argument("--max-events", type=int, default=200, help="events listed in the report")
+    q.add_argument("--x-probe", help="plot the timeline against this per-frame probe value (frames.jsonl key)")
+    q.add_argument("--log-x", action="store_true", help="logarithmic x axis for the timeline")
+    q.add_argument("--invert-x", action="store_true", help="reverse the timeline's x axis (e.g. falling altitude)")
+    q.add_argument("--title", help="timeline title")
     common(q)
     q.set_defaults(func=cmd_pops)
 

@@ -187,30 +187,42 @@ def event_panel(frames: np.ndarray, warped: np.ndarray, score: np.ndarray, event
 
 
 def timeline(pop_energy: list[float], shimmer_energy: list[float], speeds: list[float],
-             events: list[Event], fps: float, offset: int, path):
+             events: list[Event], fps: float, offset: int, path, x: list[float] | None = None,
+             x_label: str = "time (s)", log_x: bool = False, invert_x: bool = False, title: str = ""):
+    """Pop energy, unexplained change and flow speed per frame pair, against
+    time or against a recorded per-frame value (e.g. altitude)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    times = [(i + 1 + offset) / fps for i in range(len(pop_energy))]
-    fig, axes = plt.subplots(3, 1, figsize=(12, 6.4), sharex=True)
+    if x is None:
+        xs = [(i + 1 + offset) / fps for i in range(len(pop_energy))]
+    else:
+        xs = x
+    fig, axes = plt.subplots(3, 1, figsize=(12, 6.6), sharex=True)
     fig.patch.set_facecolor("#121418")
     for ax in axes:
         ax.set_facecolor("#1a1d22")
         ax.tick_params(colors="#c8c8c8")
         for spine in ax.spines.values():
             spine.set_color("#555")
-    axes[0].plot(times, pop_energy, color="#ff7a3c", lw=1.2)
+        if log_x:
+            ax.set_xscale("log")
+    axes[0].plot(xs, pop_energy, color="#ff7a3c", lw=1.2)
     axes[0].set_ylabel("pop energy", color="#e0e0e0")
+    top = max(pop_energy) if pop_energy and max(pop_energy) > 0 else 1.0
     for rank, e in enumerate(events[:10]):
-        tt = (e.frame + offset) / fps
-        axes[0].axvline(tt, color="#ffd04a", lw=0.8, alpha=0.6)
-        axes[0].text(tt, max(pop_energy) * 0.92 if pop_energy else 0, f"#{rank + 1}", color="#ffd04a", fontsize=8)
-    axes[1].plot(times, shimmer_energy, color="#7ac8ff", lw=1.2)
+        k = e.frame - 1
+        if 0 <= k < len(xs):
+            axes[0].axvline(xs[k], color="#ffd04a", lw=0.8, alpha=0.6)
+            axes[0].text(xs[k], top * (0.92 - 0.08 * (rank % 3)), f"#{rank + 1}", color="#ffd04a", fontsize=8)
+    axes[1].plot(xs, shimmer_energy, color="#7ac8ff", lw=1.2)
     axes[1].set_ylabel("unexplained\nchange", color="#e0e0e0")
-    axes[2].plot(times, speeds, color="#9be08a", lw=1.2)
+    axes[2].plot(xs, speeds, color="#9be08a", lw=1.2)
     axes[2].set_ylabel("median flow\n(px/frame)", color="#e0e0e0")
-    axes[2].set_xlabel("time (s)", color="#e0e0e0")
-    fig.suptitle("pixeldif pops: transient changes motion cannot explain", color="white")
+    axes[2].set_xlabel(x_label, color="#e0e0e0")
+    if invert_x:
+        axes[2].invert_xaxis()
+    fig.suptitle(title or "pixeldif pops: transient changes motion cannot explain", color="white")
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=100, facecolor=fig.get_facecolor())
