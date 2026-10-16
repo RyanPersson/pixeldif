@@ -240,7 +240,8 @@ def cmd_slit(args):
 def cmd_record(args):
     from .record import record
     meta = record(args.url, Path(args.out), args.frames, args.fps, args.width, args.height, args.ready,
-                  args.setup, args.warmup, args.until, args.canvas, args.timeout, args.headed, args.probe)
+                  args.setup, args.warmup, args.until, args.canvas, args.timeout, args.headed, args.probe,
+                  args.hold)
     print(f"{meta['frames']} frames at {meta['fps']:g} fps in {args.out} ({meta['seconds']} s)"
           + (f"; page error: {meta['page_error']}" if meta["page_error"] else ""))
 
@@ -343,6 +344,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--timeout", type=float, default=900.0, help="seconds")
     q.add_argument("--headed", action="store_true")
     q.add_argument("--probe", help="JavaScript expression saved per frame to frames.jsonl (e.g. game state)")
+    q.add_argument("--hold", action="append", metavar="KEY",
+                   help="key held from setup through the recording (Playwright name, e.g. KeyW); repeatable")
     q.set_defaults(func=cmd_record)
 
     q = sub.add_parser("synth", help="write a synthetic test clip with known answers")

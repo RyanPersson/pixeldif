@@ -66,3 +66,33 @@ def test_webgl_drawn_outside_animation_frames_is_captured_fresh(tmp_path):
     values = [np.asarray(Image.open(p).convert("RGB"))[8, 32] for p in sorted((tmp_path / "frames").glob("*.png"))]
     ticks = [int(v[0]) + 256 * int(v[1]) for v in values]
     assert np.all(np.diff(ticks) == 1), ticks
+
+
+KEY_PAGE = """<!doctype html><canvas id=c tabindex=0 width=64 height=16></canvas><script>
+const canvas = document.getElementById('c');
+const c = canvas.getContext('2d');
+const held = new Set();
+canvas.addEventListener('keydown', e => held.add(e.code));
+canvas.addEventListener('keyup', e => held.delete(e.code));
+function frame() {
+  c.fillStyle = held.has('KeyW') ? '#fff' : '#000';
+  c.fillRect(0, 0, 64, 16);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>"""
+
+
+def test_held_keys_reach_the_canvas_for_the_whole_recording(tmp_path):
+    pytest.importorskip("playwright")
+    from pixeldif.record import record
+    page = tmp_path / "keys.html"
+    page.write_text(KEY_PAGE)
+    try:
+        meta = record(page.as_uri(), tmp_path / "frames", frames=10, fps=60, width=200, height=100,
+                      warmup=3, selector="#c", timeout=60, hold=["KeyW"])
+    except Exception as error:
+        pytest.skip(f"browser unavailable: {error}")
+    assert meta["hold"] == ["KeyW"]
+    values = [np.asarray(Image.open(p).convert("L"))[8, 32] for p in sorted((tmp_path / "frames").glob("*.png"))]
+    assert all(v == 255 for v in values), values

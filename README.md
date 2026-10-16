@@ -103,6 +103,8 @@ expression, `--setup` runs snippets (repeatable), and `--until` or
 `--warmup` sets when recording starts. The folder gets a `pixeldif.json` with
 the frame rate, so the other commands read it directly. `--probe` evaluates a
 JavaScript expression after every frame and saves it to `frames.jsonl`.
+`--hold KeyW` (repeatable, Playwright key names) holds keys from setup to
+the last frame, to fly a game camera along a steady path.
 
 For WebGL the recorder keeps the drawing buffer and watches draw calls. It
 captures, and advances the clock, only once the engine has drawn the frame

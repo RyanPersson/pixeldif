@@ -18,6 +18,14 @@ scales: motion at several lags (fixed camera), unexplained discontinuities
 - Read the capture checks first. Duplicates or camera jumps mean the
   recording or the camera path is broken. A camera looking straight down
   with an ill-defined up vector, for example, flips its roll between frames.
+- `pops` can't see a slow morph. Optical flow explains a shape that changes
+  a little each frame as motion, so procedural clouds that reshape as the
+  camera moves leave almost no residual. For "does this change with my
+  viewpoint" questions, record the same camera path twice, once with the
+  renderer's sampling raised far beyond real-time (the recorder's virtual
+  clock makes slow frames fine), and compare `motion --roi` decorrelation:
+  the dense version is the genuine change from the motion; anything above
+  it is the artefact. Hold keys during a recording with `record --hold`.
 - Small pops piling up on objects (see "where pops happen") with a still
   camera are usually shadows re-quantising as the Sun moves, or LOD
   dithering. Crop a few consecutive frames around the hottest pixel to tell.

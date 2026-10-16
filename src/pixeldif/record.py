@@ -105,12 +105,14 @@ GPU_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-gpu-blocklist",
 def record(url: str, out: Path, frames: int, fps: float = 60.0, width: int = 1280, height: int = 720,
            ready: str | None = None, setup: list[str] | None = None, warmup: int = 0,
            until: str | None = None, selector: str = "canvas", timeout: float = 600.0,
-           headed: bool = False, probe: str | None = None) -> dict:
+           headed: bool = False, probe: str | None = None, hold: list[str] | None = None) -> dict:
     """Load `url`, wait for the `ready` JavaScript expression, run each `setup`
     snippet, let `warmup` frames pass (or wait for the `until` expression),
     then save `frames` canvas frames as PNGs in `out`. With `probe`, a
     JavaScript expression evaluated after each captured frame, its values go
-    to `frames.jsonl` (one JSON object per frame)."""
+    to `frames.jsonl` (one JSON object per frame). `hold` keys (Playwright
+    names such as KeyW or ShiftLeft) are pressed on the focused canvas after
+    setup, before the warmup, and released after the last frame."""
     from playwright.sync_api import sync_playwright
 
     out.mkdir(parents=True, exist_ok=True)
@@ -140,6 +142,10 @@ def record(url: str, out: Path, frames: int, fps: float = 60.0, width: int = 128
             page.wait_for_function(ready, timeout=timeout * 1000)
         for snippet in setup or []:
             page.evaluate(snippet)
+        if hold:
+            page.focus(selector)
+            for key in hold:
+                page.keyboard.down(key)
         if until:
             page.wait_for_function(until, timeout=timeout * 1000, polling=100)
         elif warmup:
@@ -150,9 +156,11 @@ def record(url: str, out: Path, frames: int, fps: float = 60.0, width: int = 128
         page.wait_for_function("() => !window.__pixeldif.capturing && window.__pixeldif.pending === 0",
                                timeout=timeout * 1000, polling=200)
         error = page.evaluate("() => window.__pixeldif.error")
+        for key in hold or []:
+            page.keyboard.up(key)
         browser.close()
     meta = {"fps": fps, "frames": len(written), "url": url, "size": [width, height], "setup": setup or [],
-            "ready": ready, "until": until, "warmup_frames": warmup, "seconds": round(time.time() - started, 1),
+            "ready": ready, "until": until, "warmup_frames": warmup, "hold": hold or [], "seconds": round(time.time() - started, 1),
             "page_error": error}
     if probes:
         meta["probe"] = probe
