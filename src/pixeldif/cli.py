@@ -123,7 +123,7 @@ def cmd_pops(args):
     start = parse_time(args.start, source) if args.start else 0
     end = parse_time(args.end, source) if args.end else source.frame_count
     frames = source.read(start, end - start, args.width)
-    res, masks, consistent, speeds, fast = pops.residuals(frames, args.preset)
+    res, masks, consistent, speeds, fast = pops.residuals(frames, args.preset, args.blur)
     scores = pops.pop_scores(res, masks, fast)
     events = pops.find_events(scores, args.threshold, args.min_area)
     shimmer = np.median(res, axis=0)
@@ -310,6 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--threshold", type=float, default=0.08, help="pop score threshold (fraction of full scale)")
     q.add_argument("--min-area", type=float, default=0.0004, help="smallest event, fraction of the frame")
     q.add_argument("--preset", default="medium", choices=["ultrafast", "fast", "medium"], help="optical flow quality")
+    q.add_argument("--blur", type=float, default=1.2, help="residual blur in pixels; lower keeps tiny pops (scatter)")
     q.add_argument("--top", type=int, default=6, help="events shown in the sheet")
     q.add_argument("--max-events", type=int, default=200, help="events listed in the report")
     q.add_argument("--x-probe", help="plot the timeline against this per-frame probe value (frames.jsonl key)")

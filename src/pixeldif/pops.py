@@ -89,7 +89,8 @@ def residuals(frames: np.ndarray, preset: str = "medium", blur: float = 1.2):
     for t in range(len(frames) - 1):
         warped, inside, ok, back = predictor.predict(frames[t], frames[t + 1])
         r = np.abs(viz.to_float(frames[t + 1]) - viz.to_float(warped)).max(axis=2)
-        r = cv2.GaussianBlur(r, (0, 0), blur)
+        if blur > 0:
+            r = cv2.GaussianBlur(r, (0, 0), blur)
         r[~inside] = 0.0
         res.append(r)
         masks.append(inside)
