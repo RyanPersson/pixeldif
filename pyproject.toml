@@ -1,0 +1,27 @@
+[project]
+name = "pixeldif"
+version = "0.1.0"
+description = "See how video changes over short time scales: multi-lag motion views, pop detection and time slices for agents"
+readme = "README.md"
+authors = [
+    { name = "Ryan Persson", email = "33065214+RyanPersson@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "matplotlib>=3.11.2",
+    "numpy>=2.5.4",
+    "opencv-python-headless>=5.0.0.93",
+    "pillow>=12.3.0",
+]
+
+[project.scripts]
+pixeldif = "pixeldif:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

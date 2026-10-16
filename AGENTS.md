@@ -1,0 +1,28 @@
+# pixeldif: notes for agents
+
+A command-line tool that shows agents what changes in video at short time
+scales: motion at several lags (fixed camera), unexplained discontinuities
+(moving camera) and time slices. Read README.md for the commands.
+
+## Using it to judge realism
+
+- Look at the sheet **and** read `report.json`. The sheet shows where things
+  change; the numbers say how much and at what time and spatial scale.
+- Compare like with like. Pick the same feature in both sources with
+  `--roi-a`/`--roi-b` (the plume, the steam, a patch of grass), give both
+  the same lags in time units, and capture the game at a fixed frame rate.
+- `motion` and `compare` assume a fixed camera. With a moving camera use
+  `pops` (discontinuities) or crop to a region that holds still.
+- A `pops` event is evidence, not proof: check its crops. Fast-moving
+  objects, transparency and lighting changes can leave residuals too.
+
+## Developing it
+
+- Python 3.12 with uv. `uv run pytest` must pass. Every detector change needs
+  a known-answer test on a synthetic clip (`synth.py`).
+- Outputs are for models: every tile is labelled with what it shows, its lag
+  in frames and milliseconds, and its scale. Keep sheets to a size a model
+  can read in one image (about 2,500 px wide at most).
+- Downloads, captures and output go in the ignored `media/`, `.scratch/` and
+  `pixeldif-out/` folders. Never commit video.
+- Machine: `navier` (RTX 5060 Ti, 20 cores). ffmpeg and ffprobe are installed.
