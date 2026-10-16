@@ -22,6 +22,8 @@ uv run pixeldif compare reference.mp4 game-frames/ --at-a 41.2 --at-b 3.0
 uv run pixeldif pops flythrough.mp4 --start 10 --end 25
 uv run pixeldif slit clip.mp4 --line row:0.6 --line col:0.5
 uv run pixeldif synth zoom-pop demo-frames/   # a test clip with known answers
+uv run pixeldif record http://localhost:8020/game.html frames/ --frames 180 \
+    --ready "window.gameReady" --setup "startDemo()"
 ```
 
 Every command writes a folder (default `pixeldif-out/<command>-<name>/`) with
@@ -80,10 +82,23 @@ running down. Still things make vertical stripes and steady motion makes
 slants. Waving, billowing and flicker each have their own texture. A pop or
 swap is a horizontal seam, and seams are also listed in the report.
 
+### `record`: capture a web game at an exact frame rate
+
+Loads the page in headless Chromium on the GPU, on a virtual clock:
+`performance.now()` and `Date.now()` advance by exactly 1/fps per animation
+frame, however long a frame takes to render and save. The game sees a steady
+frame rate and every PNG is exactly one step apart in game time; real-time
+screen recording drops and jitters frames. `--ready` waits for a JavaScript
+expression, `--setup` runs snippets (repeatable), and `--until` or
+`--warmup` sets when recording starts. The folder gets a `pixeldif.json` with
+the frame rate, so the other commands read it directly. Hide the game's HUD
+in a setup step when you only care about the scene.
+
 ## Setup
 
 ```sh
-uv sync          # Python 3.12, numpy, OpenCV, Pillow, matplotlib
+uv sync                         # Python 3.12, numpy, OpenCV, Pillow, matplotlib, Playwright
+uv run playwright install chromium   # for record
 uv run pytest    # known-answer tests on synthetic clips
 ```
 

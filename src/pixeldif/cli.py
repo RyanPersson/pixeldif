@@ -197,6 +197,14 @@ def cmd_slit(args):
         print(f"slit {k + 1}: {len(line['seams'])} seams" + (f" at frames {[s['frame'] for s in line['seams'][:10]]}" if line["seams"] else ""))
 
 
+def cmd_record(args):
+    from .record import record
+    meta = record(args.url, Path(args.out), args.frames, args.fps, args.width, args.height, args.ready,
+                  args.setup, args.warmup, args.until, args.canvas, args.timeout, args.headed)
+    print(f"{meta['frames']} frames at {meta['fps']:g} fps in {args.out} ({meta['seconds']} s)"
+          + (f"; page error: {meta['page_error']}" if meta["page_error"] else ""))
+
+
 def cmd_synth(args):
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -274,6 +282,22 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--end")
     common(q)
     q.set_defaults(func=cmd_slit)
+
+    q = sub.add_parser("record", help="record a web game's canvas at an exact frame rate (virtual clock)")
+    q.add_argument("url")
+    q.add_argument("out", help="folder for the PNG frames")
+    q.add_argument("--frames", type=int, default=120)
+    q.add_argument("--fps", type=float, default=60.0)
+    q.add_argument("--width", type=int, default=1280, help="browser viewport width")
+    q.add_argument("--height", type=int, default=720)
+    q.add_argument("--ready", help="JavaScript expression to wait for before setup (e.g. window.spaceState)")
+    q.add_argument("--setup", action="append", help="JavaScript to run before recording; repeatable")
+    q.add_argument("--warmup", type=int, default=0, help="frames to let pass before recording")
+    q.add_argument("--until", help="JavaScript expression to wait for before recording (instead of --warmup)")
+    q.add_argument("--canvas", default="canvas", help="CSS selector of the canvas")
+    q.add_argument("--timeout", type=float, default=900.0, help="seconds")
+    q.add_argument("--headed", action="store_true")
+    q.set_defaults(func=cmd_record)
 
     q = sub.add_parser("synth", help="write a synthetic test clip with known answers")
     q.add_argument("kind", choices=["zoom-pop", "steam"])
