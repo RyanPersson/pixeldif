@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import motion, pops, slit, synth, viz
+from . import dynamics, motion, pops, slit, synth, viz
 from .source import open_source, parse_lag, parse_roi, parse_time
 
 DEFAULT_LAGS = "1,2,4,8,16,32"
@@ -237,6 +237,118 @@ def cmd_slit(args):
         print(f"slit {k + 1}: {len(line['seams'])} seams" + (f" at frames {[s['frame'] for s in line['seams'][:10]]}" if line["seams"] else ""))
 
 
+def _point(text: str, source, w: int, h: int) -> tuple[float, float]:
+    """'x,y' as fractions of the frame (both <= 1) or source pixels."""
+    x, y = (float(v) for v in text.split(","))
+    if x <= 1 and y <= 1:
+        return x * (w - 1), y * (h - 1)
+    return x * w / source.width, y * h / source.height
+
+
+def _source_roi(text, source, w: int, h: int):
+    """parse_roi, with pixel values given in source pixels."""
+    if not text:
+        return None
+    values = [float(v) for v in text.split(",")]
+    if not all(v <= 1.0 for v in values):
+        k = w / source.width
+        text = ",".join(str(v * k) for v in values)
+    return parse_roi(text, w, h)
+
+
+def cmd_extent(args):
+    source = open_source(args.source, args.fps)
+    start = parse_time(args.start, source) if args.start else 0
+    end = parse_time(args.end, source) if args.end else source.frame_count
+    base_index = parse_time(args.base, source) if args.base else start
+    frames = source.read(start, end - start, args.width)
+    base = source.read(base_index, 1, args.width)[0]
+    h, w = frames.shape[1:3]
+    origin = _point(args.origin, source, w, h)
+    roi = _source_roi(args.roi, source, w, h)
+    reaches, masks = dynamics.reach(frames, base, origin, args.threshold, roi, join=args.join)
+    unit, k = ("m", args.scale * source.width / w) if args.scale else ("px", 1.0)
+    times = [(start + r.frame) / source.fps for r in reaches]
+    series = {name: [getattr(r, name) * k for r in reaches] for name in ("left", "right", "up")}
+    speeds = {name: dynamics.front_speed(v, source.fps, args.window) for name, v in series.items()}
+    out = _out(args, f"extent-{source.path.stem}")
+    dynamics.plot_series(series, times, out / "reach.png", f"reach from the source · {source.path.name}", f"reach ({unit})")
+    dynamics.plot_series(speeds, times, out / "speed.png", f"front speed ({args.window:g} s fit) · {source.path.name}",
+                         f"speed ({unit}/s)")
+    picks = sorted({int(round(v)) for v in np.linspace(0, len(frames) - 1, 6)})
+    tiles = [viz.tile(dynamics.contour_overlay(frames[i], masks[i], origin), f"t = {times[i]:.2f} s",
+                      f"left {series['left'][i]:.0f} right {series['right'][i]:.0f} up {series['up'][i]:.0f} {unit}",
+                      args.tile) for i in picks]
+    sheet = viz.save(viz.grid([tiles[:3], tiles[3:]], f"pixeldif extent · {source.path.name} · change against t = {base_index / source.fps:.2f} s"),
+                     out / "extent.png")
+    report = {"command": "extent", "source": str(source.path), "start_frame": start, "base_frame": base_index,
+              "origin_px_working": [round(origin[0], 1), round(origin[1], 1)], "working_size": [w, h],
+              "threshold": args.threshold, "unit": unit, "metres_per_working_px": k if args.scale else None,
+              "frames": [{"frame": start + r.frame, "time_s": round(times[i], 3), "area_px": r.area_px,
+                          **{n: round(series[n][i], 2) for n in series},
+                          **{f"{n}_speed": round(speeds[n][i], 2) for n in speeds}, "box_xywh": list(r.box)}
+                         for i, r in enumerate(reaches)],
+              "sheet": str(sheet), "plots": [str(out / "reach.png"), str(out / "speed.png")]}
+    _write(out, report)
+    print(f"sheet  {sheet}")
+    print(f"plots  {out / 'reach.png'} {out / 'speed.png'}")
+    print(f"report {out / 'report.json'}")
+    step = max(1, int(round(source.fps * args.every)))
+    for i in range(0, len(reaches), step):
+        print(f"t {times[i]:7.2f} s  reach L {series['left'][i]:6.0f} R {series['right'][i]:6.0f} U {series['up'][i]:6.0f} {unit}"
+              f"   speed L {speeds['left'][i]:6.1f} R {speeds['right'][i]:6.1f} U {speeds['up'][i]:6.1f} {unit}/s")
+
+
+def cmd_flow(args):
+    source = open_source(args.source, args.fps)
+    start = parse_time(args.start, source) if args.start else 0
+    end = parse_time(args.end, source) if args.end else source.frame_count
+    frames = source.read(start, end - start, args.width)
+    h, w = frames.shape[1:3]
+    roi = _source_roi(args.roi, source, w, h)
+    every = max(1, args.step)
+    stats, fields = dynamics.flow_stats(frames, roi, args.preset, args.min_speed, every)
+    unit, k = ("m", args.scale * source.width / w) if args.scale else ("px", 1.0)
+    per_s = source.fps * k
+    times = [(start + st.frame) / source.fps for st in stats]
+    out = _out(args, f"flow-{source.path.stem}")
+    dynamics.plot_series({"median speed": [st.median_speed * per_s for st in stats],
+                          "90th percentile": [st.p90_speed * per_s for st in stats]},
+                         times, out / "speed.png", f"flow speed of moving pixels · {source.path.name}", f"speed ({unit}/s)")
+    picks = sorted({int(round(v)) for v in np.linspace(0, len(fields) - 1, 3)})
+    vmax = max(0.5, float(np.percentile([st.p90_speed for st in stats], 90)))
+    tiles = []
+    for i in picks:
+        frame_index, field = fields[i]
+        image = frames[frame_index]
+        if roi is not None:
+            x, y, rw, rh = roi
+            image = image[y:y + rh, x:x + rw]
+        st = stats[i]
+        tiles.append([viz.tile(image, f"t = {times[i]:.2f} s", "", args.tile),
+                      viz.tile(dynamics.flow_image(field, vmax), "flow: hue = direction, saturation = speed",
+                               f"median {st.median_speed * per_s:.1f} {unit}/s, p90 {st.p90_speed * per_s:.1f}, "
+                               f"coherence {st.coherence:.2f}", args.tile)])
+    sheet = viz.save(viz.grid(tiles, f"pixeldif flow · {source.path.name}"), out / "flow.png")
+    summary = {"median_speed": float(np.median([st.median_speed for st in stats])) * per_s,
+               "p90_speed": float(np.median([st.p90_speed for st in stats])) * per_s,
+               "moving_fraction": float(np.median([st.moving_fraction for st in stats])),
+               "coherence": float(np.median([st.coherence for st in stats]))}
+    report = {"command": "flow", "source": str(source.path), "start_frame": start, "unit_per_s": f"{unit}/s",
+              "roi_working": list(roi) if roi else None, "summary": {n: round(v, 3) for n, v in summary.items()},
+              "frames": [{"frame": start + st.frame, "time_s": round(times[i], 3),
+                          "median_speed": round(st.median_speed * per_s, 3), "p90_speed": round(st.p90_speed * per_s, 3),
+                          "direction_deg": round(st.direction_deg, 1), "coherence": round(st.coherence, 3),
+                          "moving_fraction": round(st.moving_fraction, 3)} for i, st in enumerate(stats)],
+              "sheet": str(sheet), "plot": str(out / "speed.png")}
+    _write(out, report)
+    print(f"sheet  {sheet}")
+    print(f"plot   {out / 'speed.png'}")
+    print(f"report {out / 'report.json'}")
+    print(f"moving pixels: median speed {summary['median_speed']:.2f} {unit}/s, p90 {summary['p90_speed']:.2f} {unit}/s, "
+          f"coherence {summary['coherence']:.2f} (1 = streaming one way, 0 = churning), moving {summary['moving_fraction'] * 100:.0f}% of the region")
+
+
 def cmd_record(args):
     from .record import record
     meta = record(args.url, Path(args.out), args.frames, args.fps, args.width, args.height, args.ready,
@@ -328,6 +440,33 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--end")
     common(q)
     q.set_defaults(func=cmd_slit)
+
+    q = sub.add_parser("extent", help="how far a disturbance spreads from a source point over time (front speeds)")
+    q.add_argument("source")
+    q.add_argument("--origin", required=True, help="source point x,y (fractions, or source pixels)")
+    q.add_argument("--base", help="time of the undisturbed base frame (default: --start)")
+    q.add_argument("--start")
+    q.add_argument("--end")
+    q.add_argument("--roi", help="x,y,w,h limit (fractions, or source pixels)")
+    q.add_argument("--threshold", type=float, default=0.12, help="change against the base counted as disturbed (default 0.12)")
+    q.add_argument("--scale", type=float, help="metres per source pixel at the subject (reports m and m/s)")
+    q.add_argument("--window", type=float, default=0.5, help="seconds per front-speed fit (default 0.5)")
+    q.add_argument("--join", type=int, default=40, help="blobs closer than this (working px) count as one disturbance")
+    q.add_argument("--every", type=float, default=0.5, help="seconds between printed rows")
+    common(q)
+    q.set_defaults(func=cmd_extent)
+
+    q = sub.add_parser("flow", help="optical-flow speed and direction inside a region over time")
+    q.add_argument("source")
+    q.add_argument("--start")
+    q.add_argument("--end")
+    q.add_argument("--roi", help="x,y,w,h (fractions, or source pixels)")
+    q.add_argument("--scale", type=float, help="metres per source pixel at the subject (reports m/s)")
+    q.add_argument("--step", type=int, default=1, help="analyse every Nth frame pair")
+    q.add_argument("--min-speed", type=float, default=0.15, help="px/frame below which a pixel counts as still")
+    q.add_argument("--preset", default="medium", choices=["ultrafast", "fast", "medium"])
+    common(q)
+    q.set_defaults(func=cmd_flow)
 
     q = sub.add_parser("record", help="record a web game's canvas at an exact frame rate (virtual clock)")
     q.add_argument("url")

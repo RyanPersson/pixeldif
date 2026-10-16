@@ -21,6 +21,8 @@ uv run pixeldif motion clip.mp4 --at 12.5 --roi 0.3,0.2,0.4,0.6
 uv run pixeldif compare reference.mp4 game-frames/ --at-a 41.2 --at-b 3.0
 uv run pixeldif pops flythrough.mp4 --start 10 --end 25
 uv run pixeldif slit clip.mp4 --line row:0.6 --line col:0.5
+uv run pixeldif extent launch.mp4 --origin 935,690 --base 0.5 --scale 0.6
+uv run pixeldif flow fog.mp4 --roi 600,700,700,170 --scale 0.6
 uv run pixeldif synth zoom-pop demo-frames/   # a test clip with known answers
 uv run pixeldif record http://localhost:8020/game.html frames/ --frames 180 \
     --ready "window.gameReady" --setup "startDemo()"
@@ -84,6 +86,26 @@ Areas entering at the frame edges are masked. Areas uncovered behind moving
 objects recur every frame while the motion continues, so the one-frame test
 removes them. Tune with `--threshold` (default 0.08 of full scale) and
 `--min-area`.
+
+### `extent`: how fast a disturbance spreads
+
+Compares each frame with a base frame from before the disturbance started
+(an explosion, a launch cloud, a splash), keeps the changed region
+connected to `--origin` (blobs within `--join` pixels count as one), and
+reports its reach left, right and up over time, plus front speeds from a
+sliding fit. Each frame's overall brightness is matched to the base away
+from the disturbance first, because cameras re-expose as a bright cloud
+grows. With `--scale` (metres per source pixel at the subject, e.g. from a
+building of known height) it reports metres and metres per second, so a
+game capture and a reference video of different framing compare directly.
+
+### `flow`: streaming and churning speed
+
+Optical flow inside `--roi` between consecutive frames: the median and
+90th-percentile speed of the moving pixels and their direction
+*coherence* (1 = everything streams one way, like fog creeping along the
+ground; near 0 = churning, like a billowing cloud). Also with `--scale`.
+For a fixed camera only.
 
 ### `slit`: time slices
 

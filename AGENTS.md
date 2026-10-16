@@ -18,6 +18,13 @@ scales: motion at several lags (fixed camera), unexplained discontinuities
 - Read the capture checks first. Duplicates or camera jumps mean the
   recording or the camera path is broken. A camera looking straight down
   with an ill-defined up vector, for example, flips its roll between frames.
+- Dynamics in physical units: `extent` (front speeds of a spreading
+  cloud) and `flow` (median speed and direction coherence inside a region),
+  with `--scale` from an object of known size in each source. Compare a
+  game capture and a reference at the same metres per pixel in `motion`
+  (choose `--width` so they match) so the decorrelation scales line up.
+  Read regions in `motion` are working-width pixels or fractions; `extent`
+  and `flow` take source pixels or fractions.
 - `pops` can't see a slow morph. Optical flow explains a shape that changes
   a little each frame as motion, so procedural clouds that reshape as the
   camera moves leave almost no residual. For "does this change with my
