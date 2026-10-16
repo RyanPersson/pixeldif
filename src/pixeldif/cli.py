@@ -132,20 +132,44 @@ def cmd_pops(args):
     shimmer_energy = [float(r.mean()) for r in res]
     out = _out(args, f"pops-{source.path.stem}")
     pops.timeline(pop_energy, shimmer_energy, speeds, events, source.fps, start, out / "timeline.png")
+    probes = source.probes()
+
+    def note(frame: int) -> str:
+        value = probes.get(frame)
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            return ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}" for k, v in value.items())
+        return f"{value:.4g}" if isinstance(value, float) else str(value)
+
     predictor = pops.Predictor(args.preset)
     vmax = max(0.15, max((e.peak for e in events[: args.top]), default=0.15))
     rows = []
     for e in events[: args.top]:
         warped, _, _, _ = predictor.predict(frames[e.frame - 1], frames[e.frame])
-        rows.append(pops.event_panel(frames, warped, scores[e.frame - 1], e, vmax, source.fps, start, args.tile))
-    shimmer_row = [viz.tile(viz.overlay_heat(viz.to_float(frames[len(frames) // 2]), shimmer, max(0.1, float(np.percentile(shimmer, 99.5)))),
-                            "persistent unexplained change", "median residual over the clip (shimmer, aliasing)", args.tile * 2)]
+        rows.append(pops.event_panel(frames, warped, scores[e.frame - 1], e, vmax, source.fps, start, args.tile,
+                                     note(e.frame + start)))
+    # Where pops happen over the whole clip: many small pops (scatter, LOD
+    # swaps of small objects) never form one large event but pile up here.
+    hits = (scores > args.threshold).sum(axis=0).astype(np.float32)
+    last = viz.to_float(frames[-1])
+    shimmer_row = [
+        viz.tile(viz.overlay_heat(viz.to_float(frames[len(frames) // 2]), shimmer, max(0.1, float(np.percentile(shimmer, 99.5)))),
+                 "persistent unexplained change", "median residual over the clip (shimmer, aliasing)", args.tile * 2),
+        viz.tile(viz.overlay_heat(last, hits, max(2.0, float(hits.max()))),
+                 "where pops happen", f"frames with a pop at each pixel (max {int(hits.max())}), on the last frame", args.tile * 2),
+    ]
     heading = (f"pixeldif pops · {source.path.name} · {len(frames)} frames from {start / source.fps:.2f} s · "
                f"{len(events)} events (threshold {args.threshold:g})")
     sheet = viz.save(viz.grid(rows + [shimmer_row] if rows else [shimmer_row], heading), out / "pops.png")
+    checks = pops.capture_checks(frames, speeds)
+    checks = {"duplicate_frames": [f + start for f in checks["duplicate_frames"]],
+              "camera_jumps": [dict(j, frame=j["frame"] + start) for j in checks["camera_jumps"]]}
     report = {"command": "pops", "source": str(source.path), "fps": source.fps, "start_frame": start,
+              "capture_checks": checks,
               "frames": len(frames), "threshold": args.threshold, "min_area": args.min_area,
-              "events": [e.as_dict(source.fps, start) for e in events[: args.max_events]],
+              "events": [dict(e.as_dict(source.fps, start), **({"probe": probes[e.frame + start]} if e.frame + start in probes else {}))
+                         for e in events[: args.max_events]],
               "event_count": len(events), "pop_energy": [round(v, 6) for v in pop_energy],
               "unexplained_change": [round(v, 5) for v in shimmer_energy],
               "median_flow_px": [round(v, 3) for v in speeds],
@@ -154,10 +178,17 @@ def cmd_pops(args):
     print(f"sheet    {sheet}")
     print(f"timeline {out / 'timeline.png'}")
     print(f"report   {out / 'report.json'}")
+    n = len(frames)
+    if len(checks["duplicate_frames"]) > 0.02 * n:
+        print(f"WARNING: {len(checks['duplicate_frames'])} duplicated frames: the capture may be dropping or repeating frames")
+    if checks["camera_jumps"]:
+        print(f"WARNING: {len(checks['camera_jumps'])} camera jumps (motion spikes), first at frames "
+              f"{[j['frame'] for j in checks['camera_jumps'][:8]]}: the camera path or the capture is not smooth")
     print(f"{len(events)} events above {args.threshold:g}; strongest:")
     for e in events[: min(args.top, 10)]:
         d = e.as_dict(source.fps, start)
-        print(f"  frame {d['frame']:>5} ({d['time_s']:7.2f} s)  box {d['box_xywh']}  area {d['area_fraction'] * 100:5.2f}%  peak {d['peak']:.2f}")
+        print(f"  frame {d['frame']:>5} ({d['time_s']:7.2f} s)  box {d['box_xywh']}  area {d['area_fraction'] * 100:5.2f}%  peak {d['peak']:.2f}"
+              + (f"  {note(d['frame'])}" if note(d['frame']) else ""))
 
 
 def cmd_slit(args):
@@ -200,7 +231,7 @@ def cmd_slit(args):
 def cmd_record(args):
     from .record import record
     meta = record(args.url, Path(args.out), args.frames, args.fps, args.width, args.height, args.ready,
-                  args.setup, args.warmup, args.until, args.canvas, args.timeout, args.headed)
+                  args.setup, args.warmup, args.until, args.canvas, args.timeout, args.headed, args.probe)
     print(f"{meta['frames']} frames at {meta['fps']:g} fps in {args.out} ({meta['seconds']} s)"
           + (f"; page error: {meta['page_error']}" if meta["page_error"] else ""))
 
@@ -297,6 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--canvas", default="canvas", help="CSS selector of the canvas")
     q.add_argument("--timeout", type=float, default=900.0, help="seconds")
     q.add_argument("--headed", action="store_true")
+    q.add_argument("--probe", help="JavaScript expression saved per frame to frames.jsonl (e.g. game state)")
     q.set_defaults(func=cmd_record)
 
     q = sub.add_parser("synth", help="write a synthetic test clip with known answers")

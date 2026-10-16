@@ -66,9 +66,19 @@ motion is predicted, so it cancels. A **pop** is a residual that spikes for
 one frame pair and is quiet before and after: scatter or an LOD popping in, a
 texture swap, a shadow-cascade switch. The sheet shows the strongest events
 (full frame with a box, then before, prediction, after and the unexplained
-change, cropped), plus a map of **persistent** unexplained change (shimmer,
-temporal aliasing, z-fighting). `timeline.png` plots pop energy, unexplained
-change and camera speed over time.
+change, cropped). Two maps follow: **persistent** unexplained change (shimmer,
+temporal aliasing, z-fighting), and **where pops happen**, the number of
+frames with a pop at each pixel. The second catches many small pops, such as
+scatter or shadows, that never form one large event. `timeline.png` plots pop
+energy, unexplained change and camera speed over time.
+
+The report also runs **capture checks**: frames repeated while the picture
+is moving, and camera jumps (frames whose overall motion spikes far above its
+running median). Both mean the capture or the camera path is broken, so fix
+that before reading the events. If neighbouring frames fall into two
+interleaved families, compare frame *i* with frames *i+1* and *i+2*.
+Recordings made with `record --probe` carry per-frame values (for example
+altitude) that label each event.
 
 Areas entering at the frame edges are masked. Areas uncovered behind moving
 objects recur every frame while the motion continues, so the one-frame test
@@ -91,7 +101,14 @@ frame rate and every PNG is exactly one step apart in game time; real-time
 screen recording drops and jitters frames. `--ready` waits for a JavaScript
 expression, `--setup` runs snippets (repeatable), and `--until` or
 `--warmup` sets when recording starts. The folder gets a `pixeldif.json` with
-the frame rate, so the other commands read it directly. Hide the game's HUD
+the frame rate, so the other commands read it directly. `--probe` evaluates a
+JavaScript expression after every frame and saves it to `frames.jsonl`.
+
+For WebGL the recorder keeps the drawing buffer and watches draw calls. It
+captures, and advances the clock, only once the engine has drawn the frame
+for the current time. Engines that render outside `requestAnimationFrame`
+(Bevy/winit on the web) would otherwise be captured from stale,
+double-buffered frames. Hide the game's HUD
 in a setup step when you only care about the scene.
 
 ## Setup

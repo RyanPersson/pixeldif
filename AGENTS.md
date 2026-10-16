@@ -15,6 +15,12 @@ scales: motion at several lags (fixed camera), unexplained discontinuities
   `pops` (discontinuities) or crop to a region that holds still.
 - A `pops` event is evidence, not proof: check its crops. Fast-moving
   objects, transparency and lighting changes can leave residuals too.
+- Read the capture checks first. Duplicates or camera jumps mean the
+  recording or the camera path is broken. A camera looking straight down
+  with an ill-defined up vector, for example, flips its roll between frames.
+- Small pops piling up on objects (see "where pops happen") with a still
+  camera are usually shadows re-quantising as the Sun moves, or LOD
+  dithering. Crop a few consecutive frames around the hottest pixel to tell.
 
 ## Developing it
 

@@ -142,8 +142,26 @@ def find_events(scores: np.ndarray, threshold: float, min_area: float, merge: in
     return sorted(events, key=lambda e: -e.score)
 
 
+def capture_checks(frames: np.ndarray, speeds: list[float]) -> dict:
+    """Signs of a broken capture or a jumpy camera: duplicated frames, and
+    frames whose overall motion spikes far above its running median."""
+    diffs = [float(np.abs(frames[t + 1].astype(np.int16) - frames[t].astype(np.int16)).mean())
+             for t in range(len(frames) - 1)]
+    # A repeated frame only points at the capture when the picture is moving
+    # on both sides of it (a still or slow camera repeats frames honestly).
+    duplicates = [t + 1 for t, d in enumerate(diffs)
+                  if d < 0.3 and 0 < t < len(diffs) - 1 and diffs[t - 1] > 1.0 and diffs[t + 1] > 1.0]
+    jumps = []
+    for t, v in enumerate(speeds):
+        window = speeds[max(0, t - 15):t] + speeds[t + 1:t + 16]
+        typical = float(np.median(window)) if window else 0.0
+        if v > 4.0 * max(typical, 0.5) and v > 4.0:
+            jumps.append({"frame": t + 1, "median_flow_px": round(v, 2), "typical_px": round(typical, 2)})
+    return {"duplicate_frames": duplicates, "camera_jumps": jumps}
+
+
 def event_panel(frames: np.ndarray, warped: np.ndarray, score: np.ndarray, event: Event,
-                vmax: float, fps: float, offset: int, width: int = 320) -> list:
+                vmax: float, fps: float, offset: int, width: int = 320, note: str = "") -> list:
     """Before, after, the motion-compensated prediction and the highlight, cropped
     around the event, plus the full frame with its box."""
     t = event.frame
@@ -159,7 +177,8 @@ def event_panel(frames: np.ndarray, warped: np.ndarray, score: np.ndarray, event
     label = f"frame {t + offset} ({(t + offset) / fps:.2f} s)"
     after = viz.to_float(frames[t])
     return [
-        viz.tile(viz.draw_box(frames[t], event.box), label, f"area {event.area_fraction * 100:.2f}%, peak {event.peak:.2f}", width),
+        viz.tile(viz.draw_box(frames[t], event.box), label + (f" · {note}" if note else ""),
+                 f"area {event.area_fraction * 100:.2f}%, peak {event.peak:.2f}", width),
         viz.tile(cut(viz.to_float(frames[t - 1])), "before (t-1)", "", width),
         viz.tile(cut(viz.to_float(warped)), "predicted from t-1", "flow-warped", width),
         viz.tile(cut(after), "after (t)", "", width),

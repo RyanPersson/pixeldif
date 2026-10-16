@@ -28,6 +28,18 @@ class Source:
     frame_count: int
     files: list[Path] | None = None
 
+    def probes(self) -> dict[int, object]:
+        """Per-frame values recorded with `record --probe` (frames.jsonl)."""
+        path = self.path / "frames.jsonl" if self.kind == "images" else None
+        if not path or not path.exists():
+            return {}
+        out = {}
+        for line in path.read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                out[int(row["frame"])] = row["value"]
+        return out
+
     @property
     def duration(self) -> float:
         return self.frame_count / self.fps
