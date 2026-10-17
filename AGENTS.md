@@ -33,6 +33,19 @@ scales: motion at several lags (fixed camera), unexplained discontinuities
   clock makes slow frames fine), and compare `motion --roi` decorrelation:
   the dense version is the genuine change from the motion; anything above
   it is the artefact. Hold keys during a recording with `record --hold`.
+- "Does this texture move with the world or with me?" is `swim`, not
+  `pops` (which explains a slide as motion). It needs a pose per frame and a
+  depth recording of the same path; check it first on a scene that must read
+  0 (opaque world-fixed ground with texture, moving sideways): if the world
+  and measured arrows disagree there, the poses, depth or probe timing are
+  wrong, not the renderer. Read fine detail and coarse shapes separately, and
+  give volumes their far depth (README): against the nearest opacity, cloud
+  decks behind haze read as swimming when they are not. Confirm what it
+  flags with a time slice at native resolution (vertical streaks are fixed
+  on screen) or a reference render with the suspect sampling raised: the
+  flag should go away there. Small motion leaves pixels unmeasured: fly fast
+  enough that world and viewer flows differ by a few pixels, sideways if
+  possible.
 - Small pops piling up on objects (see "where pops happen") with a still
   camera are usually shadows re-quantising as the Sun moves, or LOD
   dithering. Crop a few consecutive frames around the hottest pixel to tell.

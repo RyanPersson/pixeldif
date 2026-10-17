@@ -6,6 +6,10 @@ existence and a patch of ground whose texture is swapped (an LOD change).
 
 `steam`: a fixed camera on a static scene with a slowly billowing plume and a
 fast-flickering light, for the motion views.
+
+`swim_flight`: a camera flying over textured ground (turning slowly) with its
+poses and depth frames; one patch of ground texture travels with the camera
+and one at half its speed, for `swim`.
 """
 from __future__ import annotations
 
@@ -85,3 +89,60 @@ def steam(n: int = 120, size=(640, 360), fps: float = 60.0, seed: int = 5):
         cv2.circle(image, (int(0.85 * w), int(0.25 * h)), 14, (1.0, 0.8 * lamp + 0.2, 0.3 * lamp), -1, cv2.LINE_AA)
         frames.append((np.clip(image, 0, 1) * 255 + 0.5).astype(np.uint8))
     return np.stack(frames)
+
+
+def camera_matrix(heading_deg: float, pitch_deg: float) -> np.ndarray:
+    """Camera-to-world rotation for a camera looking along -Z with +Y up,
+    turned by heading (from -Z toward +X) and pitch (negative down)."""
+    h, p = np.radians(heading_deg), np.radians(pitch_deg)
+    forward = np.array([np.sin(h) * np.cos(p), np.sin(p), -np.cos(h) * np.cos(p)])
+    right = np.array([np.cos(h), 0.0, np.sin(h)])
+    up = np.cross(right, forward)
+    return np.stack([right, up, -forward], axis=1)
+
+
+SWIM_BOXES = {"viewer": ((0.06, 0.56, 0.3, 0.36), 1.0), "half": ((0.64, 0.56, 0.3, 0.36), 0.5)}
+
+
+def swim_flight(n: int = 40, size=(320, 180), fov_deg: float = 60.0, height: float = 40.0, seed: int = 11,
+                supersample: int = 2):
+    """Frames, depth frames (metres along the ray, inf for sky), probe dicts
+    with the camera pose, and the truth: {name: (box as frame fractions,
+    expected anchoring)}; the rest of the ground is fixed to the world."""
+    from .swim import camera_rays, matrix_quaternion
+    w, h = size
+    W, H = w * supersample, h * supersample
+    texel = 0.1  # metres per texture pixel
+    texture = noise_texture(1024, seed, octaves=(128, 32, 12))
+    texture = cv2.cvtColor(texture, cv2.COLOR_RGB2HSV)
+    texture[..., 1] = np.clip(texture[..., 1] * 1.8, 0, 1)
+    texture = cv2.cvtColor(texture, cv2.COLOR_HSV2RGB)
+    ys, xs = np.mgrid[0:H, 0:W]
+    masks = {}
+    for name, ((bx, by, bw, bh), _) in SWIM_BOXES.items():
+        masks[name] = (xs >= bx * W) & (xs < (bx + bw) * W) & (ys >= by * H) & (ys < (by + bh) * H)
+    velocity = np.array([0.8, 0.0, -1.2])
+    frames, depths, probes = [], [], []
+    for f in range(n):
+        position = np.array([0.0, height, 0.0]) + velocity * f
+        rotation = camera_matrix(0.15 * f, -35.0)
+        rays = camera_rays(W, H, np.radians(fov_deg)) @ rotation.T
+        down = rays[..., 1] < -0.02
+        distance = np.where(down, height / np.where(down, -rays[..., 1], 1.0), np.inf)
+        point = position + np.where(down, distance, 0.0)[..., None] * rays
+        image = np.empty((H, W, 3), np.float32)
+        for name, travel in (("world", 0.0), ("viewer", 1.0), ("half", 0.5)):
+            mask = masks.get(name, ~(masks["viewer"] | masks["half"]))
+            ground = point - travel * position
+            mx = (ground[..., 0] / texel).astype(np.float32)
+            my = (ground[..., 2] / texel).astype(np.float32)
+            sampled = cv2.remap(texture, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+            image[mask] = sampled[mask]
+        sky = np.array([0.55, 0.7, 0.9], np.float32) * (0.8 + 0.2 * np.clip(rays[..., 1:2], 0, 1))
+        image = np.where(down[..., None], image, sky)
+        frames.append((np.clip(cv2.resize(image, size, interpolation=cv2.INTER_AREA), 0, 1) * 255 + 0.5).astype(np.uint8))
+        small = cv2.resize(np.where(down, distance, 1e9), size, interpolation=cv2.INTER_NEAREST)
+        depths.append(np.where(small < 1e8, small, np.inf))
+        probes.append({"position_m": position.tolist(), "rotation_xyzw": matrix_quaternion(rotation),
+                       "fov_y_deg": fov_deg})
+    return np.stack(frames), depths, probes, SWIM_BOXES

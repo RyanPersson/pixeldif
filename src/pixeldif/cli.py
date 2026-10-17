@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import dynamics, motion, pops, slit, synth, viz
+from . import dynamics, motion, pops, slit, swim, synth, viz
 from .source import open_source, parse_lag, parse_roi, parse_time
 
 DEFAULT_LAGS = "1,2,4,8,16,32"
@@ -349,6 +349,254 @@ def cmd_flow(args):
           f"coherence {summary['coherence']:.2f} (1 = streaming one way, 0 = churning), moving {summary['moving_fraction'] * 100:.0f}% of the region")
 
 
+def cmd_swim(args):
+    import cv2
+    import warnings
+    source = open_source(args.source, args.fps)
+    depth_source = open_source(args.depth, args.fps)
+    start = parse_time(args.start, source) if args.start else 0
+    end = min(parse_time(args.end, source) if args.end else source.frame_count, source.frame_count)
+    lag = parse_lag(args.lag, source.fps)
+    probes = source.probes()
+    poses = {i: swim.Pose.from_probe(v, args.pose_key) for i, v in probes.items()}
+    depth_poses = {i: swim.Pose.from_probe(v, args.pose_key) for i, v in depth_source.probes().items()}
+    poses = {i: p for i, p in poses.items() if p is not None}
+    depth_poses = {i: p for i, p in depth_poses.items() if p is not None}
+    if not poses or not depth_poses:
+        raise SystemExit("swim needs camera poses in frames.jsonl of both recordings (record --probe)")
+    # Pair each frame with the depth frame of the same pose (the recordings
+    # may start a frame apart); frames without a match are left out.
+    steps = [poses[i].difference(poses[i + 1])[0] for i in poses if i + 1 in poses]
+    tolerance = 0.02 * (float(np.median(steps)) if steps else 0.0) + 1e-3
+    pairing, unmatched, worst = {}, [], [0.0, 0.0]
+    depth_ids = sorted(depth_poses)
+    for i in range(start, end):
+        if i not in poses:
+            continue
+        j = min(depth_ids, key=lambda k: sum(np.array(poses[i].difference(depth_poses[k])) * (1.0, 1e3)))
+        moved, turned = poses[i].difference(depth_poses[j])
+        if moved > tolerance or turned > 0.01:
+            unmatched.append(i)
+            continue
+        pairing[i] = j
+        worst = [max(worst[0], moved), max(worst[1], turned)]
+    w, h = source.scaled_size(args.width)
+    frames = source.read(start, end - start, args.width)
+    depth_cache = {}
+
+    def depth(i):
+        if i not in depth_cache:
+            raw = np.asarray(depth_source.read(pairing[i], 1)[0])
+            depth_cache[i] = swim.smooth_depth(swim.resize_depth(swim.decode_depth(raw), w, h))
+        return depth_cache[i]
+
+    def blurred(frame):
+        return cv2.GaussianBlur(frame, (0, 0), args.coarse)
+
+    fine = swim.Analyser(args.preset, args.min_separation, args.min_texture, args.depth_tolerance, args.blur)
+    coarse = swim.Analyser(args.preset, args.min_separation, args.min_texture / (1 + args.coarse) ** 2,
+                           args.depth_tolerance, args.blur)
+    results, coarse_results, pairs = [], [], []
+    for t in range(0, len(frames) - lag, args.step):
+        i, k = start + t, start + t + lag
+        if i not in pairing or k not in pairing:
+            continue
+        a, b = frames[t], frames[t + lag]
+        results.append(fine.pair(a, b, depth(i), depth(k), poses[i], poses[k]))
+        coarse_results.append(coarse.pair(blurred(a), blurred(b), depth(i), depth(k), poses[i], poses[k]))
+        pairs.append(t)
+    if not results:
+        raise SystemExit("no frame pairs with poses and depth")
+
+    def median_map(rs):
+        stack = np.stack([r.anchoring for r in rs])
+        counts = np.isfinite(stack).sum(axis=0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            median = np.nanmedian(stack, axis=0)
+        median[counts < max(2, int(args.min_share * len(rs)))] = np.nan
+        return median, stack
+
+    median, stack = median_map(results)
+    median_coarse, stack_coarse = median_map(coarse_results)
+    leftover_world = np.mean([r.leftover_world for r in results], axis=0)
+    leftover_flow = np.mean([r.leftover_flow for r in results], axis=0)
+
+    def summary(values):
+        return (float(np.median(values)) if values.size else float("nan"),
+                float((values > 0.5).mean()) if values.size else float("nan"))
+
+    series = {"median_anchoring": [], "viewer_share": [], "coarse_median_anchoring": [], "coarse_viewer_share": [],
+              "leftover_world": [], "leftover_flow": [], "measured_fraction": []}
+    for r, rc in zip(results, coarse_results):
+        m, v = summary(r.anchoring[np.isfinite(r.anchoring)])
+        mc, vc = summary(rc.anchoring[np.isfinite(rc.anchoring)])
+        series["median_anchoring"].append(m)
+        series["viewer_share"].append(v)
+        series["coarse_median_anchoring"].append(mc)
+        series["coarse_viewer_share"].append(vc)
+        series["leftover_world"].append(float(r.leftover_world[r.inside].mean()) if r.inside.any() else 0.0)
+        series["leftover_flow"].append(float(r.leftover_flow[r.inside].mean()) if r.inside.any() else 0.0)
+        series["measured_fraction"].append(float(np.isfinite(r.anchoring).mean()))
+    out = _out(args, f"swim-{source.path.stem}")
+    x, x_label = [(start + t + lag) / source.fps for t in pairs], "time (s)"
+    if args.x_probe:
+        def value(frame):
+            v = probes.get(frame)
+            return v.get(args.x_probe) if isinstance(v, dict) else v
+        x, x_label = [value(start + t + lag) for t in pairs], args.x_probe
+    swim.timeline(series, x, x_label, out / "timeline.png", args.log_x, args.invert_x, args.title or "")
+
+    def note(frame: int) -> str:
+        v = probes.get(frame)
+        if isinstance(v, dict) and args.x_probe and args.x_probe in v:
+            return f" · {args.x_probe} {v[args.x_probe]:.4g}"
+        return ""
+
+    def headline(anchoring):
+        a = anchoring[np.isfinite(anchoring)]
+        if not a.size:
+            return "nothing measurable"
+        return f"median {np.median(a):.2f}, {(a > 0.5).mean() * 100:.0f}% above 0.5, on {np.isfinite(anchoring).mean() * 100:.0f}% of the frame"
+
+    tile = args.tile
+    rows = []
+    picks = sorted({int(round(q)) for q in np.linspace(0, len(results) - 1, min(args.rows, len(results)))})
+    vmax = max(0.08, float(np.percentile(np.stack([r.leftover_world for r in results]), 99.5)))
+    for n in picks:
+        r, rc, t = results[n], coarse_results[n], pairs[n]
+        frame = frames[t]
+        label = f"frame {start + t} ({(start + t) / source.fps:.2f} s){note(start + t)}"
+        rows.append([
+            viz.tile(viz.to_float(frame), label, f"to frame {start + t + lag} (lag {lag})", tile),
+            viz.tile(swim.anchoring_overlay(frame, r.anchoring), "anchoring, fine detail", headline(r.anchoring), tile),
+            viz.tile(swim.anchoring_overlay(frame, rc.anchoring), f"anchoring, coarse (blur {args.coarse:g} px)",
+                     headline(rc.anchoring), tile),
+            viz.tile(viz.overlay_heat(viz.to_float(frame), r.leftover_world, vmax), "leftover after the world warp",
+                     f"mean {r.leftover_world[r.inside].mean():.3f} (0 to {vmax:.2f})", tile),
+            viz.tile(viz.overlay_heat(viz.to_float(frame), r.leftover_flow, vmax), "leftover after the flow warp (pops)",
+                     f"mean {r.leftover_flow[r.inside].mean():.3f}: what pops can see", tile),
+            viz.tile(swim.arrows(frame, r.measured, r.world, r.valid), "fine flow: yellow measured, cyan world",
+                     "arrows scaled to the grid", tile),
+        ])
+    middle = frames[len(frames) // 2]
+    rows.append([
+        viz.tile(swim.anchoring_overlay(middle, median), "fine detail: median anchoring over the clip",
+                 f"{len(results)} pairs · blue 0 world, yellow 0.5, red 1 viewer", tile * 2),
+        viz.tile(swim.anchoring_overlay(middle, median_coarse), f"coarse (blur {args.coarse:g} px): median anchoring",
+                 "cyan below 0: faster than the world at that depth", tile * 2),
+    ])
+    # The world-stabilized view: later frames warped back into a reference
+    # frame by the world motion. World-fixed texture stays sharp in the mean
+    # and still in the change; swimming texture smears and changes.
+    ref = start + pairs[len(pairs) // 2] if args.stabilize <= 0 else start
+    span = min(args.stabilize if args.stabilize > 0 else 15, end - ref - 1)
+    stab = [swim.stabilize(frames[ref - start + k], depth(ref), poses[ref], poses[ref + k])
+            for k in range(0, span + 1) if ref + k in poses and ref in pairing]
+    if stab:
+        images = np.stack([s[0] for s in stab])
+        inside = np.logical_and.reduce([s[1] for s in stab])
+        stab_change = np.abs(images[1:] - images[0]).max(axis=3).mean(axis=0) if len(images) > 1 else np.zeros((h, w))
+        stab_change[~inside] = 0.0
+        mean = np.where(inside[..., None], images.mean(axis=0), viz.to_float(frames[ref - start]) * 0.3)
+        stab_vmax = max(0.08, float(np.percentile(stab_change[inside], 99.5))) if inside.any() else 0.1
+        box = swim.crop_box(median, (max(64, w // 4), max(48, h // 4)))
+        bx, by, bw, bh = box
+        zoom = tile * 2 // 3
+        rows.append([
+            viz.tile(mean, f"world-stabilized mean of {len(images)} frames",
+                     f"from frame {ref}: world-fixed stays sharp, swimming smears", tile * 2),
+            viz.tile(viz.overlay_heat(viz.to_float(frames[ref - start]), stab_change, stab_vmax),
+                     "change in the world-stabilized frames", f"mean over {len(images) - 1} frames (0 to {stab_vmax:.2f})", tile),
+            viz.tile(viz.to_float(middle[by:by + bh, bx:bx + bw]), "most viewer-anchored area",
+                     f"box {list(box)}, magnified", zoom),
+            viz.tile(swim.anchoring_overlay(middle[by:by + bh, bx:bx + bw], median[by:by + bh, bx:bx + bw], 0.55),
+                     "its fine-detail anchoring", "", zoom),
+        ])
+    heading = (f"pixeldif swim · {source.path.name} · {len(results)} pairs, lag {lag} · "
+               f"depth paired within {worst[0]:.3g} m, {worst[1]:.2g} deg")
+    sheet = viz.save(viz.grid(rows, heading), out / "swim.png")
+    found = swim.regions(median, args.threshold, args.min_area)
+    found_coarse = swim.regions(median_coarse, args.threshold, args.min_area)
+    if args.video:
+        _swim_video(frames, start, depth, poses, pairing, results, coarse_results, pairs, out / "stabilized.mp4",
+                    source.fps, args.video_span)
+
+    def overall(stack_):
+        v = stack_[np.isfinite(stack_)]
+        return {"median_anchoring": round(float(np.median(v)), 3) if v.size else None,
+                "viewer_share": round(float((v > 0.5).mean()), 3) if v.size else None,
+                "measured_share": round(float(np.isfinite(stack_).mean()), 3)}
+
+    report = {"command": "swim", "source": str(source.path), "depth": str(depth_source.path), "fps": source.fps,
+              "start_frame": start, "lag": lag, "pairs": len(results), "coarse_blur_px": args.coarse,
+              "depth_pairing": {"max_position_m": worst[0], "max_rotation_deg": worst[1],
+                                "offset_frames": sorted({pairing[i] - i for i in pairing}),
+                                "unmatched_frames": unmatched},
+              "fine": dict(overall(stack), regions=found[: args.max_regions]),
+              "coarse": dict(overall(stack_coarse), regions=found_coarse[: args.max_regions]),
+              "leftover_world_mean": round(float(leftover_world.mean()), 4),
+              "leftover_flow_mean": round(float(leftover_flow.mean()), 4),
+              "series": {k: [None if v != v else round(v, 4) for v in vals] for k, vals in series.items()},
+              "x": x, "x_label": x_label, "sheet": str(sheet), "timeline": str(out / "timeline.png")}
+    _write(out, report)
+    print(f"sheet    {sheet}")
+    print(f"timeline {out / 'timeline.png'}")
+    if args.video:
+        print(f"video    {out / 'stabilized.mp4'}")
+    print(f"report   {out / 'report.json'}")
+    if unmatched:
+        print(f"WARNING: {len(unmatched)} frames have no depth frame at their pose (first {unmatched[:5]}): "
+              "record both passes along the same camera path")
+    for name, part in (("fine", report["fine"]), (f"coarse (blur {args.coarse:g} px)", report["coarse"])):
+        if part["median_anchoring"] is None:
+            print(f"{name}: nothing measurable")
+            continue
+        print(f"{name}: anchoring over {part['measured_share'] * 100:.0f}% of pixels, median {part['median_anchoring']:.2f} "
+              f"(0 moves with the world, 1 with the viewer), {part['viewer_share'] * 100:.0f}% above 0.5; "
+              f"{len(part['regions'])} regions above {args.threshold:g}")
+        for r in part["regions"][:5]:
+            print(f"  box {r['box_xywh']}  area {r['area_fraction'] * 100:5.2f}%  median anchoring {r['median_anchoring']:.2f}")
+    print(f"leftover after the world warp {report['leftover_world_mean']:.4f}, after the flow warp {report['leftover_flow_mean']:.4f}")
+
+
+def _swim_video(frames, start, depth, poses, pairing, results, coarse_results, pairs, path, fps, span):
+    """A 2x2 video: the recording, the world-stabilized recording (its
+    reference resets every `span` frames), and the fine and coarse anchoring."""
+    import subprocess
+    import cv2
+    h, w = frames.shape[1:3]
+    by_frame = {start + t: (r, rc) for t, r, rc in zip(pairs, results, coarse_results)}
+    command = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w * 2}x{h * 2}",
+               "-r", f"{fps:g}", "-i", "-", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-crf", "16", str(path)]
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE)
+    fine = coarse = np.full((h, w, 3), 0.1, np.float32)
+    for t in range(len(frames)):
+        i = start + t
+        anchor = start + (t // span) * span
+        if anchor in pairing and i in poses:
+            stab, inside = swim.stabilize(frames[t], depth(anchor), poses[anchor], poses[i])
+            stab[~inside] *= 0.0
+        else:
+            stab = viz.to_float(frames[t])
+        if i in by_frame:
+            fine = swim.anchoring_overlay(frames[t], by_frame[i][0].anchoring)
+            coarse = swim.anchoring_overlay(frames[t], by_frame[i][1].anchoring)
+        panel = np.concatenate([np.concatenate([viz.to_float(frames[t]), stab], axis=1),
+                                np.concatenate([fine, coarse], axis=1)], axis=0)
+        image = np.ascontiguousarray(viz.to_uint8(panel))
+        for (x, y), text in (((8, 20), f"recording, frame {i}"),
+                             ((w + 8, 20), f"world-stabilized to frame {anchor}: world-fixed holds still"),
+                             ((8, h + 20), "anchoring, fine detail: blue world, red viewer"),
+                             ((w + 8, h + 20), "anchoring, coarse shapes")):
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            cv2.rectangle(image, (x - 4, y - th - 5), (x + tw + 4, y + 6), (12, 14, 18), -1)
+            cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        proc.stdin.write(image.tobytes())
+    proc.stdin.close()
+    proc.wait()
+
+
 def cmd_record(args):
     from .record import record
     meta = record(args.url, Path(args.out), args.frames, args.fps, args.width, args.height, args.ready,
@@ -467,6 +715,37 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--preset", default="medium", choices=["ultrafast", "fast", "medium"])
     common(q)
     q.set_defaults(func=cmd_flow)
+
+    q = sub.add_parser("swim", help="texture moving with the viewer instead of the world (needs poses and a depth recording)")
+    q.add_argument("source", help="folder of frames recorded with per-frame camera poses (record --probe)")
+    q.add_argument("--depth", required=True, help="the same camera path recorded in the renderer's depth view")
+    q.add_argument("--pose-key", help="key of the pose inside each probe value (default: the value itself, or 'camera')")
+    q.add_argument("--start", help="seconds, mm:ss or <n>f")
+    q.add_argument("--end", help="seconds, mm:ss or <n>f")
+    q.add_argument("--lag", default="1", help="frames between the compared frames (default 1)")
+    q.add_argument("--step", type=int, default=1, help="analyse every Nth frame pair")
+    q.add_argument("--min-separation", type=float, default=0.5,
+                   help="px/frame by which world and viewer motion must differ to measure a pixel (default 0.5)")
+    q.add_argument("--min-texture", type=float, default=2e-5, help="smallest structure-tensor eigenvalue to track a pixel")
+    q.add_argument("--depth-tolerance", type=float, default=0.25,
+                   help="log-distance mismatch at which a point counts as hidden in the next frame (default 0.25)")
+    q.add_argument("--min-share", type=float, default=0.2, help="share of pairs a pixel must be measured in for the median map")
+    q.add_argument("--coarse", type=float, default=3.0, help="blur (px) for the coarse-shape pass (default 3)")
+    q.add_argument("--threshold", type=float, default=0.3, help="median anchoring that makes a region (default 0.3)")
+    q.add_argument("--min-area", type=float, default=0.002, help="smallest region, fraction of the frame")
+    q.add_argument("--max-regions", type=int, default=50)
+    q.add_argument("--rows", type=int, default=4, help="frame pairs shown in the sheet")
+    q.add_argument("--stabilize", type=int, default=0, help="frames in the stabilized view (default 15 from the middle)")
+    q.add_argument("--video", action="store_true", help="also write stabilized.mp4 (recording | stabilized | anchoring)")
+    q.add_argument("--video-span", type=int, default=30, help="frames before the stabilized video's reference resets")
+    q.add_argument("--preset", default="medium", choices=["ultrafast", "fast", "medium"])
+    q.add_argument("--blur", type=float, default=1.2)
+    q.add_argument("--x-probe", help="plot the timeline against this per-frame probe value")
+    q.add_argument("--log-x", action="store_true")
+    q.add_argument("--invert-x", action="store_true")
+    q.add_argument("--title")
+    common(q)
+    q.set_defaults(func=cmd_swim)
 
     q = sub.add_parser("record", help="record a web game's canvas at an exact frame rate (virtual clock)")
     q.add_argument("url")

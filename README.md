@@ -23,6 +23,7 @@ uv run pixeldif pops flythrough.mp4 --start 10 --end 25
 uv run pixeldif slit clip.mp4 --line row:0.6 --line col:0.5
 uv run pixeldif extent launch.mp4 --origin 935,690 --base 0.5 --scale 0.6
 uv run pixeldif flow fog.mp4 --roi 600,700,700,170 --scale 0.6
+uv run pixeldif swim flight/ --depth flight-depth/ --video
 uv run pixeldif synth zoom-pop demo-frames/   # a test clip with known answers
 uv run pixeldif record http://localhost:8020/game.html frames/ --frames 180 \
     --ready "window.gameReady" --setup "startDemo()"
@@ -106,6 +107,49 @@ Optical flow inside `--roi` between consecutive frames: the median and
 *coherence* (1 = everything streams one way, like fog creeping along the
 ground; near 0 = churning, like a billowing cloud). Also with `--scale`.
 For a fixed camera only.
+
+### `swim`: texture that moves with the viewer instead of the world
+
+`pops` can't see swimming: it warps each frame by the motion it measures,
+so a texture sliding along with the camera is just more motion to it.
+`swim` warps by the motion the world allows instead. It needs the camera
+pose of every frame (`record --probe`) and the distance each pixel shows:
+a second recording of the same camera path in the renderer's depth view.
+From those, every world-fixed point has one place to be in the next frame
+(the *world flow*); a pattern glued to the camera would only turn with it
+(the *viewer flow*). Per pixel, the measured optical flow is placed between
+the two:
+
+- **anchoring** 0 means the picture moves with the world, 1 with the viewer,
+  0.5 sliding along at half the camera's speed. Below 0 means faster than the
+  world at the given depth, which is normal for volumes (see below). Pixels
+  where the two flows differ by less than `--min-separation` (0.5 px), with
+  nothing to track, or hidden in the next frame are left out.
+- It is measured twice: on the frames as recorded (**fine detail**) and
+  blurred by `--coarse` pixels (**coarse shapes**). A dither or grain fixed
+  to the screen reads 1 in fine detail while the clouds carrying it read 0.
+- **leftover after the world warp** against **after the flow warp** (what
+  `pops` sees): where the world warp leaves more, the picture isn't fixed to
+  the world. A slide is predicted well by the flow warp; a texture
+  regenerated in place each frame (a morph) by neither. Morphs also read as
+  anchoring near 1, as the pattern has no coherent motion: check this pair.
+- **world-stabilized** view: later frames warped back into a reference
+  frame. World-fixed content stands still (sharp in the mean), swimming
+  crawls. `--video` writes `stabilized.mp4`: recording, stabilized
+  recording and both anchoring maps.
+
+Poses: each probe value (or its `camera` or `--pose-key` entry) holds
+`position_m` in a frame where the scene is static, `rotation_xyzw` (camera to
+that frame; the camera looks along -Z with +Y up) and `fov_y_deg`. Depth
+frames: distance along the ray as a 24-bit code in RGB (R high), metres =
+10^(code / 16777215 x 14 - 2); code 0 is nothing (sky). For volumes (clouds,
+haze) give the far end of what the pixel shows: the nearest opacity is often
+featureless haze in front of the structure that carries the texture, and
+testing against it reads clouds as swimming. Against the far end the test is
+one-sided: anchoring above 0 means slower than anything in the volume could
+move. Record with time paused so the camera is the only thing moving; the
+depth pairing in the report shows whether both passes followed one path.
+Reflections and highlights really do move with the viewer.
 
 ### `slit`: time slices
 
