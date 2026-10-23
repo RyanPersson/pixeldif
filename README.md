@@ -13,11 +13,6 @@ records web games frame-exactly, so captures are reproducible. Every
 command writes a labelled PNG sheet, a `report.json` and a short text
 summary.
 
-The motion views follow the time-offset difference from Posy's
-[*Motion Extraction*](https://www.youtube.com/watch?v=NSS6yAMZF78): overlay a
-video on an inverted, time-shifted copy of itself and the static parts cancel
-to grey, leaving only what changed during the offset.
-
 ## What to use for what
 
 | You see or suspect | Command | Camera |
@@ -103,8 +98,9 @@ to confirm a finding before reporting it.
 From one moment, the sheet shows the frame and the change after lags of
 1, 2, 4, 8, 16 and 32 frames (`--lags` also takes `50ms` or `0.5s`):
 
-- **Overlay row:** Posy's overlay, `0.5 + 0.5·gain·(later − now)`. Static areas
-  are grey; moving areas keep their colour.
+- **Overlay row:** the frame overlaid on an inverted, time-shifted copy of
+  itself, `0.5 + 0.5·gain·(later − now)`. Static areas are grey; moving
+  areas keep their colour.
 - **Heat row:** the size of the change on a darkened copy of the frame, with
   one shared scale so the lags compare. The row opens with a **time-scale map**:
   blue where the picture changes within a frame or two (flicker, turbulence),
