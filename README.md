@@ -48,8 +48,8 @@ clone: `uv tool install .` (or `pipx install .`).
 A synthetic clip with two known glitches, then the detector:
 
 ```sh
-uv run pixeldif synth zoom-pop demo/      # 90 frames: a pop at frame 40, a texture swap at 65
-uv run pixeldif pops demo/
+uv run pixeldif synth zoom-pop media/demo/   # 90 frames: a pop at frame 40, a texture swap at 65
+uv run pixeldif pops media/demo/
 ```
 
 ```
