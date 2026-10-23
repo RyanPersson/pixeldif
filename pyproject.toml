@@ -15,9 +15,6 @@ classifiers = [
     "Topic :: Multimedia :: Video",
     "Topic :: Software Development :: Testing",
 ]
-authors = [
-    { name = "Ryan Persson", email = "33065214+RyanPersson@users.noreply.github.com" }
-]
 requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.11.2",
@@ -26,6 +23,11 @@ dependencies = [
     "pillow>=13.0.0",
     "playwright>=1.64.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/RyanPersson/pixeldif"
+Repository = "https://github.com/RyanPersson/pixeldif"
+Issues = "https://github.com/RyanPersson/pixeldif/issues"
 
 [project.scripts]
 pixeldif = "pixeldif:main"

@@ -39,7 +39,7 @@ You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/), and
 neither ffmpeg nor a browser.
 
 ```sh
-git clone <this repository> pixeldif && cd pixeldif
+git clone https://github.com/RyanPersson/pixeldif.git && cd pixeldif
 uv sync                                  # numpy, OpenCV, Pillow, matplotlib, Playwright
 uv run playwright install chromium       # only for `record`
 uv run pixeldif --help
