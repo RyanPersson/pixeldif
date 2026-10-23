@@ -601,7 +601,7 @@ def cmd_record(args):
     from .record import record
     meta = record(args.url, Path(args.out), args.frames, args.fps, args.width, args.height, args.ready,
                   args.setup, args.warmup, args.until, args.canvas, args.timeout, args.headed, args.probe,
-                  args.hold)
+                  args.hold, not args.no_sandbox)
     print(f"{meta['frames']} frames at {meta['fps']:g} fps in {args.out} ({meta['seconds']} s)"
           + (f"; page error: {meta['page_error']}" if meta["page_error"] else ""))
 
@@ -754,13 +754,15 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--fps", type=float, default=60.0)
     q.add_argument("--width", type=int, default=1280, help="browser viewport width")
     q.add_argument("--height", type=int, default=720)
-    q.add_argument("--ready", help="JavaScript expression to wait for before setup (e.g. window.spaceState)")
+    q.add_argument("--ready", help="JavaScript expression to wait for before setup (e.g. window.gameReady)")
     q.add_argument("--setup", action="append", help="JavaScript to run before recording; repeatable")
     q.add_argument("--warmup", type=int, default=0, help="frames to let pass before recording")
     q.add_argument("--until", help="JavaScript expression to wait for before recording (instead of --warmup)")
     q.add_argument("--canvas", default="canvas", help="CSS selector of the canvas")
     q.add_argument("--timeout", type=float, default=900.0, help="seconds")
     q.add_argument("--headed", action="store_true")
+    q.add_argument("--no-sandbox", action="store_true",
+                   help="run Chromium without its sandbox (some containers and root need it; only for pages you trust)")
     q.add_argument("--probe", help="JavaScript expression saved per frame to frames.jsonl (e.g. game state)")
     q.add_argument("--hold", action="append", metavar="KEY",
                    help="key held from setup through the recording (Playwright name, e.g. KeyW); repeatable")
@@ -777,7 +779,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if getattr(args, "line", "unset") is None:
         args.line = ["row:0.5"]
-    args.func(args)
+    try:
+        args.func(args)
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        print(f"pixeldif: {error}", file=sys.stderr)
+        return 1
     return 0
 
 

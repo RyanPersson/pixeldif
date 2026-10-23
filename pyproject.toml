@@ -1,8 +1,20 @@
 [project]
 name = "pixeldif"
 version = "0.1.0"
-description = "See how video changes over short time scales: multi-lag motion views, pop detection and time slices for agents"
+description = "Find visual glitches in video and game captures (pops, flicker, swimming textures) as images and numbers an AI agent can read"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["video", "rendering", "graphics", "testing", "optical-flow", "game-development", "ai-agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Software Development :: Testing",
+]
 authors = [
     { name = "Ryan Persson", email = "33065214+RyanPersson@users.noreply.github.com" }
 ]
@@ -11,7 +23,7 @@ dependencies = [
     "matplotlib>=3.11.2",
     "numpy>=2.5.4",
     "opencv-python-headless>=5.0.0.93",
-    "pillow>=12.3.0",
+    "pillow>=13.0.0",
     "playwright>=1.64.0",
 ]
 

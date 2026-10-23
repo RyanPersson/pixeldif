@@ -16,9 +16,12 @@ frames.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
+import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 CLOCK = """
 (() => {
@@ -98,21 +101,45 @@ CLOCK = """
 })();
 """
 
-GPU_ARGS = ["--no-sandbox", "--disable-dev-shm-usage", "--ignore-gpu-blocklist", "--use-angle=vulkan",
+GPU_ARGS = ["--disable-dev-shm-usage", "--ignore-gpu-blocklist", "--use-angle=vulkan",
             "--enable-features=Vulkan", "--use-vulkan=native", "--disable-vulkan-surface"]
+PNG_DATA_URL = "data:image/png;base64,"
+
+
+def is_local(url: str) -> bool:
+    """A page on this machine: a file, or http(s) on a loopback address."""
+    parts = urlsplit(url)
+    if parts.scheme == "file":
+        return True
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    if parts.hostname == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(parts.hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def record(url: str, out: Path, frames: int, fps: float = 60.0, width: int = 1280, height: int = 720,
            ready: str | None = None, setup: list[str] | None = None, warmup: int = 0,
            until: str | None = None, selector: str = "canvas", timeout: float = 600.0,
-           headed: bool = False, probe: str | None = None, hold: list[str] | None = None) -> dict:
+           headed: bool = False, probe: str | None = None, hold: list[str] | None = None,
+           sandbox: bool = True) -> dict:
     """Load `url`, wait for the `ready` JavaScript expression, run each `setup`
     snippet, let `warmup` frames pass (or wait for the `until` expression),
     then save `frames` canvas frames as PNGs in `out`. With `probe`, a
     JavaScript expression evaluated after each captured frame, its values go
     to `frames.jsonl` (one JSON object per frame). `hold` keys (Playwright
     names such as KeyW or ShiftLeft) are pressed on the focused canvas after
-    setup, before the warmup, and released after the last frame."""
+    setup, before the warmup, and released after the last frame.
+
+    The browser runs in Chromium's sandbox unless `sandbox` is False. Where
+    the system has no usable sandbox (Ubuntu 23.10+ restricts the user
+    namespaces it needs; containers and root), a page on this machine
+    (file:// or a loopback address) is recorded without it and a warning
+    printed; any other page needs `sandbox=False` (--no-sandbox), which
+    should only be used for pages you trust."""
     from playwright.sync_api import sync_playwright
 
     out.mkdir(parents=True, exist_ok=True)
@@ -121,7 +148,13 @@ def record(url: str, out: Path, frames: int, fps: float = 60.0, width: int = 128
     probes = {}
 
     def save_frame(index: int, data_url: str, probe: str | None = None):
-        data = base64.b64decode(data_url.split(",", 1)[1])
+        # The page can call this binding itself: accept only PNG frames with
+        # an index in range, so it can't write anything else or fill the disk.
+        if type(index) is not int or not 0 <= index < frames:
+            raise ValueError(f"frame index {index!r} out of range")
+        if not isinstance(data_url, str) or not data_url.startswith(PNG_DATA_URL):
+            raise ValueError("frames must be PNG data URLs")
+        data = base64.b64decode(data_url[len(PNG_DATA_URL):], validate=True)
         path = out / f"{index:05d}.png"
         path.write_bytes(data)
         written[index] = path
@@ -130,7 +163,23 @@ def record(url: str, out: Path, frames: int, fps: float = 60.0, width: int = 128
 
     started = time.time()
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=not headed, args=GPU_ARGS)
+        def launch(sandboxed: bool):
+            return p.chromium.launch(headless=not headed, chromium_sandbox=sandboxed,
+                                     args=GPU_ARGS + ([] if sandboxed else ["--no-sandbox"]))
+        try:
+            browser = launch(sandbox)
+        except Exception as error:
+            if not sandbox or "No usable sandbox" not in str(error):
+                raise
+            if not is_local(url):
+                raise RuntimeError(
+                    "Chromium's sandbox is unavailable on this system (on Ubuntu 23.10+ see "
+                    "https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md). "
+                    "Pages on this machine are recorded without it; for this URL pass --no-sandbox "
+                    "only if you trust the page.") from None
+            print("pixeldif: Chromium's sandbox is unavailable on this system; "
+                  "recording this local page without it", file=sys.stderr)
+            browser = launch(False)
         page = browser.new_page(viewport={"width": width, "height": height})
         log = []
         page.on("console", lambda m: log.append(f"[{m.type}] {m.text}"))

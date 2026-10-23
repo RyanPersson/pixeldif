@@ -16,6 +16,15 @@ import numpy as np
 from PIL import Image
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+# Inputs may be local files only: a video that is really a playlist could
+# otherwise make ffmpeg fetch URLs.
+INPUT_GUARD = ["-protocol_whitelist", "file"]
+
+
+def _ffmpeg_path(path: Path) -> str:
+    """An absolute path, which ffmpeg can't mistake for an option (a name
+    starting with '-') or a protocol ('name:...')."""
+    return str(Path(path).absolute())
 
 
 @dataclass
@@ -69,7 +78,7 @@ class Source:
         # Accurate input seeking: ffmpeg decodes from the previous keyframe and
         # discards frames up to the requested time.
         command = [
-            "ffmpeg", "-v", "error", "-ss", f"{start / self.fps:.6f}", "-i", str(self.path),
+            "ffmpeg", "-v", "error", *INPUT_GUARD, "-ss", f"{start / self.fps:.6f}", "-i", _ffmpeg_path(self.path),
             "-frames:v", str(count), "-vf", f"scale={w}:{h}:flags=area",
             "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
         ]
@@ -95,12 +104,16 @@ def open_source(path: str | Path, fps: float | None = None) -> Source:
     if not path.exists():
         raise FileNotFoundError(path)
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        ["ffprobe", "-v", "error", *INPUT_GUARD, "-select_streams", "v:0", "-show_entries",
          "stream=width,height,avg_frame_rate,r_frame_rate,nb_frames,duration:format=duration",
-         "-of", "json", str(path)],
-        check=True, capture_output=True, text=True,
+         "-of", "json", _ffmpeg_path(path)],
+        capture_output=True, text=True,
     )
+    if probe.returncode != 0:
+        raise ValueError(f"ffprobe can't read {path}: {probe.stderr.strip() or 'unknown error'}")
     info = json.loads(probe.stdout)
+    if not info.get("streams"):
+        raise ValueError(f"no video stream in {path}")
     stream = info["streams"][0]
 
     def rate(text: str) -> float:
