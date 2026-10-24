@@ -105,10 +105,13 @@ SWIM_BOXES = {"viewer": ((0.06, 0.56, 0.3, 0.36), 1.0), "half": ((0.64, 0.56, 0.
 
 
 def swim_flight(n: int = 40, size=(320, 180), fov_deg: float = 60.0, height: float = 40.0, seed: int = 11,
-                supersample: int = 2):
+                supersample: int = 2, shimmer_box=None, shimmer_px: float = 1.0):
     """Frames, depth frames (metres along the ray, inf for sky), probe dicts
     with the camera pose, and the truth: {name: (box as frame fractions,
-    expected anchoring)}; the rest of the ground is fixed to the world."""
+    expected anchoring)}; the rest of the ground is fixed to the world.
+    With `shimmer_box` (x, y, w, h fractions), the picture inside it is also
+    displaced by a smooth field of about `shimmer_px` pixels that changes
+    every frame, like heat haze crawling over world-fixed ground."""
     from .swim import camera_rays, matrix_quaternion
     w, h = size
     W, H = w * supersample, h * supersample
@@ -140,6 +143,21 @@ def swim_flight(n: int = 40, size=(320, 180), fov_deg: float = 60.0, height: flo
             image[mask] = sampled[mask]
         sky = np.array([0.55, 0.7, 0.9], np.float32) * (0.8 + 0.2 * np.clip(rays[..., 1:2], 0, 1))
         image = np.where(down[..., None], image, sky)
+        if shimmer_box is not None:
+            bx, by, bw, bh = shimmer_box
+            inside = (xs >= bx * W) & (xs < (bx + bw) * W) & (ys >= by * H) & (ys < (by + bh) * H)
+            rng = np.random.default_rng(1000 + f)
+            amp = shimmer_px * supersample / np.sqrt(2.0)
+            dx = np.zeros((H, W), np.float32)
+            dy = np.zeros((H, W), np.float32)
+            for _ in range(3):  # a few smooth waves ~10-25 px long, new phases every frame
+                kx, ky = rng.uniform(-1, 1, 2) * 2 * np.pi / (rng.uniform(10, 25) * supersample)
+                dx += np.sin(kx * xs + ky * ys + rng.uniform(0, 2 * np.pi)).astype(np.float32)
+                dy += np.sin(ky * xs - kx * ys + rng.uniform(0, 2 * np.pi)).astype(np.float32)
+            dx, dy = dx * amp / np.sqrt(1.5), dy * amp / np.sqrt(1.5)
+            warped = cv2.remap(image, (xs + dx).astype(np.float32), (ys + dy).astype(np.float32), cv2.INTER_LINEAR,
+                               borderMode=cv2.BORDER_REFLECT)
+            image = np.where(inside[..., None], warped, image)
         frames.append((np.clip(cv2.resize(image, size, interpolation=cv2.INTER_AREA), 0, 1) * 255 + 0.5).astype(np.uint8))
         small = cv2.resize(np.where(down, distance, 1e9), size, interpolation=cv2.INTER_NEAREST)
         depths.append(np.where(small < 1e8, small, np.inf))

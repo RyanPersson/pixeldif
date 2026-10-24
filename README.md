@@ -20,6 +20,7 @@ summary.
 | Things popping in, LOD or texture swaps, one-frame glitches | `pops` | moving or still |
 | Flicker, shimmer, z-fighting, temporal aliasing | `pops` (persistent map), `motion` | either |
 | A texture or pattern that slides along with the camera | `swim` | moving, with poses and depth |
+| Surfaces that wobble or crawl, as if seen through heat haze or water | `swim` (non-rigid flow, shimmer; `--lag 4` to `8`) | moving, with poses and depth |
 | Whether motion looks right against a reference video | `compare` | fixed |
 | How something moves at different time scales (steam, grass, a plume) | `motion` | fixed |
 | How fast a cloud or explosion spreads, in m/s | `extent` | fixed |
@@ -195,10 +196,27 @@ the two:
   the world. A slide is predicted well by the flow warp; a texture
   regenerated in place each frame (a morph) by neither. Morphs also read as
   anchoring near 1, as the pattern has no coherent motion: check this pair.
+- **non-rigid flow**, measured minus world flow (px), wherever the flow is
+  trusted, with no separation needed: any motion a rigid world seen by the
+  moving camera can't explain, in any direction, also far away where world
+  and viewer flow nearly agree. Its median size over the clip shows steady
+  slides (swimming, sway); its **shimmer**, how much it changes between
+  successive pairs at a pixel, shows distortion that crawls or wobbles
+  with the viewpoint (heat haze, a surface seen through water) and
+  averages out of any median. Regions above `--shimmer-threshold` (0.5 px)
+  are listed in the report.
 - **world-stabilized** view: later frames warped back into a reference
   frame. World-fixed content stands still (sharp in the mean), swimming
   crawls. `--video` writes `stabilized.mp4`: recording, stabilized
-  recording and both anchoring maps.
+  recording, fine-detail anchoring and non-rigid flow.
+
+A drift of a fraction of a pixel per frame sits in the optical flow's noise
+at `--lag 1` but adds up over several frames: compare `--lag 1` with
+`--lag 4` or `8`, as noise doesn't grow with the lag and a drift does. For
+a noise floor, measure a pair whose second frame is the first warped by the
+world flow (`swim.expected_flows` from the second frame's depth and pose to
+the first's, then `swim.sample`): it is world-fixed by construction, so
+only what the real pair shows beyond it is the renderer's.
 
 Poses: each probe value (or its `camera` or `--pose-key` entry) holds
 `position_m` in a frame where the scene is static, `rotation_xyzw` (camera to
@@ -211,7 +229,10 @@ testing against it reads clouds as swimming. Against the far end the test is
 one-sided: anchoring above 0 means slower than anything in the volume could
 move. Record with time paused so the camera is the only thing moving; the
 depth pairing in the report shows whether both passes followed one path.
-Reflections and highlights really do move with the viewer.
+The depth pass must show exactly the geometry of the colour pass: a debug
+switch that also changes the level of detail, for example, makes every
+detailed surface read as swimming. Nearby opaque ground reading 0 is the
+check. Reflections and highlights really do move with the viewer.
 
 ### `slit`: time slices
 

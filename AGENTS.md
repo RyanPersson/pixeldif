@@ -43,6 +43,7 @@ Run it as `pixeldif <command>` if it is installed as a tool, or
 | Many small pops (scatter, shadows) | `pops`, "where pops happen" map | They never form one big event; the map counts them per pixel. |
 | Flicker, shimmer, z-fighting, temporal aliasing | `pops`, "persistent" map | Unexplained change that stays, rather than spikes. |
 | A texture sliding along with the camera ("swimming") | `swim` | Needs camera poses and a depth recording (below). `pops` can't see it. |
+| Surfaces that wobble or crawl like heat haze or water | `swim`: non-rigid flow and shimmer | Slow crawls need `--lag 4` to `8` (below). |
 | Motion that looks wrong next to a reference video | `compare` | Fixed camera; same feature in both via `--roi-a`/`--roi-b`. |
 | How something moves at several time scales | `motion` | Fixed camera; `--roi` on the feature. |
 | How fast a cloud or explosion spreads | `extent` | Fixed camera; `--scale` metres per pixel for m/s. |
@@ -65,6 +66,13 @@ Run it as `pixeldif <command>` if it is installed as a tool, or
 - `swim`: anchoring 0 means the picture moves with the world, 1 with the
   viewer. Fine detail and coarse shapes are measured separately: a screen-
   fixed dither on world-fixed clouds reads 1 in fine detail and 0 coarse.
+  Non-rigid flow (measured minus world flow, px) catches motion in any
+  direction that a rigid world can't explain; its shimmer (change between
+  successive pairs) catches distortion that wobbles with the viewpoint,
+  which anchoring and its medians miss entirely. Thin lines along
+  silhouettes are terrain being revealed or hidden, not artefacts; blotches
+  on smooth surfaces are. The world-warp leftover outlines the features
+  that move.
 
 ## Pitfalls
 
@@ -104,7 +112,23 @@ of every frame and the distance each pixel shows:
   differ by a few pixels.
 - Check the setup on a scene that must read 0 first: opaque, textured,
   world-fixed ground with the camera moving sideways. If it doesn't read 0,
-  the poses, depth or probe timing are wrong, not the renderer.
+  the poses, depth or probe timing are wrong, not the renderer. Nearby
+  ground reading around 0.4 everywhere usually means the depth pass shows
+  different geometry from the colour pass (a debug switch that also
+  changed the level of detail, say): fix that before reading anything.
+- A crawl of a fraction of a pixel per frame hides in the flow's noise at
+  `--lag 1`; run `--lag 4` or `8` too. Noise stays the same as the lag
+  grows, a real drift grows with it.
+- Measure a noise floor before calling something an artefact: warp the
+  first frame of a pair by the world flow into the second's view
+  (`swim.expected_flows` from the second frame's depth and pose to the
+  first's, then `swim.sample`), analyse that pair the same way, and count
+  only what the real pair shows beyond it. Smooth, low-texture patches
+  read a few tenths of a pixel even when they're perfectly world-fixed.
+- To find the cause in a renderer you can change, render the same frames
+  with one term switched off at a time and compare against the floor at
+  the lag where the signal is clear. Freezing scene time separates the
+  viewpoint from animation.
 - Confirm a flag with a time slice at native resolution (screen-fixed
   patterns make vertical streaks) or a render with the suspect sampling
   raised: the flag should go away there. Reflections and highlights really

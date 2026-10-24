@@ -76,3 +76,53 @@ def test_cli_finds_the_travelling_patches(flight, tmp_path):
            and r["box_xywh"][1] <= cy <= r["box_xywh"][1] + r["box_xywh"][3]]
     assert hit and hit[0]["median_anchoring"] > 0.8, report["fine"]["regions"]
     assert (out / "swim.png").exists()
+
+
+SHIMMER_BOX = (0.38, 0.32, 0.26, 0.2)
+
+
+@pytest.fixture(scope="module")
+def hazy_flight():
+    return synth.swim_flight(n=16, shimmer_box=SHIMMER_BOX)
+
+
+def test_shimmer_finds_heat_haze_that_anchoring_misses(hazy_flight):
+    frames, depths, probes, boxes = hazy_flight
+    poses = [swim.Pose.from_probe(p) for p in probes]
+    analyser = swim.Analyser()
+    results = [analyser.pair(frames[t], frames[t + 1], depths[t], depths[t + 1], poses[t], poses[t + 1])
+               for t in range(len(frames) - 1)]
+    size, shimmer, per_pair = swim.nonrigid_maps(results)
+    shape = frames.shape[1:3]
+    anchoring = np.stack([r.anchoring for r in results]).transpose(1, 2, 0)
+    # The haze crawls over world-fixed ground: anchoring reads 0, shimmer doesn't.
+    assert abs(np.median(_region(anchoring, SHIMMER_BOX, shape))) < 0.1
+    assert np.median(_region(shimmer, SHIMMER_BOX, shape)) > 0.5
+    assert np.median(_region(shimmer, (0.4, 0.62, 0.2, 0.3), shape)) < 0.2
+    # Steady slides have a large non-rigid flow but hardly any shimmer.
+    for name in ("viewer", "half"):
+        box = boxes[name][0]
+        assert np.median(_region(size, box, shape)) > 1.0, name
+        assert np.median(_region(shimmer, box, shape)) < 0.2, name
+    assert np.isnan(per_pair[0]) and len(per_pair) == len(results)
+
+
+def test_cli_reports_the_shimmering_patch(hazy_flight, tmp_path):
+    frames, depths, probes, boxes = hazy_flight
+    for folder, images in (("color", frames), ("depth", [swim.encode_depth(d) for d in depths])):
+        (tmp_path / folder).mkdir()
+        for i, image in enumerate(images):
+            Image.fromarray(image).save(tmp_path / folder / f"{i:05d}.png")
+        (tmp_path / folder / "pixeldif.json").write_text(json.dumps({"fps": 30}))
+        (tmp_path / folder / "frames.jsonl").write_text(
+            "".join(json.dumps({"frame": i, "value": p}) + "\n" for i, p in enumerate(probes)))
+    out = tmp_path / "out"
+    main(["swim", str(tmp_path / "color"), "--depth", str(tmp_path / "depth"), "--out", str(out), "--rows", "2"])
+    report = json.loads((out / "report.json").read_text())
+    h, w = frames.shape[1:3]
+    cx, cy = (SHIMMER_BOX[0] + SHIMMER_BOX[2] / 2) * w, (SHIMMER_BOX[1] + SHIMMER_BOX[3] / 2) * h
+    hit = [r for r in report["nonrigid"]["regions"]
+           if r["box_xywh"][0] <= cx <= r["box_xywh"][0] + r["box_xywh"][2]
+           and r["box_xywh"][1] <= cy <= r["box_xywh"][1] + r["box_xywh"][3]]
+    assert hit and hit[0]["median_shimmer_px"] > 0.5, report["nonrigid"]["regions"]
+    assert report["nonrigid"]["median_shimmer_px"] < 0.3

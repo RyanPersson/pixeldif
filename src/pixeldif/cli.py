@@ -419,6 +419,10 @@ def cmd_swim(args):
 
     median, stack = median_map(results)
     median_coarse, stack_coarse = median_map(coarse_results)
+    nr_size, shimmer, shimmer_series = swim.nonrigid_maps(results, args.min_share)
+    nr_sizes = [swim.nonrigid_size(r) for r in results]
+    nr_known = np.concatenate([v[np.isfinite(v)] for v in nr_sizes])
+    nr_vmax = max(1.0, float(np.percentile(nr_known, 99))) if nr_known.size else 1.0
     leftover_world = np.mean([r.leftover_world for r in results], axis=0)
     leftover_flow = np.mean([r.leftover_flow for r in results], axis=0)
 
@@ -427,8 +431,10 @@ def cmd_swim(args):
                 float((values > 0.5).mean()) if values.size else float("nan"))
 
     series = {"median_anchoring": [], "viewer_share": [], "coarse_median_anchoring": [], "coarse_viewer_share": [],
-              "leftover_world": [], "leftover_flow": [], "measured_fraction": []}
-    for r, rc in zip(results, coarse_results):
+              "leftover_world": [], "leftover_flow": [], "measured_fraction": [], "nonrigid_px": [],
+              "shimmer_px": shimmer_series}
+    for r, rc, size in zip(results, coarse_results, nr_sizes):
+        series["nonrigid_px"].append(float(np.median(size[np.isfinite(size)])) if np.isfinite(size).any() else float("nan"))
         m, v = summary(r.anchoring[np.isfinite(r.anchoring)])
         mc, vc = summary(rc.anchoring[np.isfinite(rc.anchoring)])
         series["median_anchoring"].append(m)
@@ -470,8 +476,9 @@ def cmd_swim(args):
         rows.append([
             viz.tile(viz.to_float(frame), label, f"to frame {start + t + lag} (lag {lag})", tile),
             viz.tile(swim.anchoring_overlay(frame, r.anchoring), "anchoring, fine detail", headline(r.anchoring), tile),
-            viz.tile(swim.anchoring_overlay(frame, rc.anchoring), f"anchoring, coarse (blur {args.coarse:g} px)",
-                     headline(rc.anchoring), tile),
+            viz.tile(viz.overlay_heat(viz.to_float(frame), np.nan_to_num(nr_sizes[n]), nr_vmax),
+                     "non-rigid flow |measured - world|",
+                     f"median {np.nanmedian(nr_sizes[n]):.2f} px (0 to {nr_vmax:.1f}): any motion a rigid world can't explain", tile),
             viz.tile(viz.overlay_heat(viz.to_float(frame), r.leftover_world, vmax), "leftover after the world warp",
                      f"mean {r.leftover_world[r.inside].mean():.3f} (0 to {vmax:.2f})", tile),
             viz.tile(viz.overlay_heat(viz.to_float(frame), r.leftover_flow, vmax), "leftover after the flow warp (pops)",
@@ -485,6 +492,26 @@ def cmd_swim(args):
                  f"{len(results)} pairs · blue 0 world, yellow 0.5, red 1 viewer", tile * 2),
         viz.tile(swim.anchoring_overlay(middle, median_coarse), f"coarse (blur {args.coarse:g} px): median anchoring",
                  "cyan below 0: faster than the world at that depth", tile * 2),
+    ])
+    # Non-rigid flow over the clip: steady slides by size, crawling distortion
+    # (heat haze) by shimmer, the change of r between successive pairs.
+    sh_known = shimmer[np.isfinite(shimmer)]
+    sh_vmax = max(0.5, float(np.percentile(sh_known, 99))) if sh_known.size else 1.0
+    sbox = swim.crop_box(shimmer, (max(64, w // 4), max(48, h // 4)), args.shimmer_threshold)
+    sx, sy, sw, sh = sbox
+    szoom = tile * 2 // 3
+    rows.append([
+        viz.tile(viz.overlay_heat(viz.to_float(middle), np.nan_to_num(nr_size), nr_vmax),
+                 "non-rigid flow: median |measured - world| over the clip",
+                 f"px (0 to {nr_vmax:.1f}): slides in any direction, sway, swimming", tile * 2),
+        viz.tile(viz.overlay_heat(viz.to_float(middle), np.nan_to_num(shimmer), sh_vmax),
+                 "shimmer: change of the non-rigid flow between pairs",
+                 f"rms px (0 to {sh_vmax:.1f}): crawling, heat-haze distortion", tile * 2),
+        viz.tile(viz.to_float(middle[sy:sy + sh, sx:sx + sw]), "most shimmering area",
+                 f"box {list(sbox)}, magnified", szoom),
+        viz.tile(viz.overlay_heat(viz.to_float(middle[sy:sy + sh, sx:sx + sw]),
+                                  np.nan_to_num(shimmer[sy:sy + sh, sx:sx + sw]), sh_vmax, dim=0.6),
+                 "its shimmer", "", szoom),
     ])
     # The world-stabilized view: later frames warped back into a reference
     # frame by the world motion. World-fixed texture stays sharp in the mean
@@ -518,8 +545,9 @@ def cmd_swim(args):
     sheet = viz.save(viz.grid(rows, heading), out / "swim.png")
     found = swim.regions(median, args.threshold, args.min_area)
     found_coarse = swim.regions(median_coarse, args.threshold, args.min_area)
+    found_shimmer = swim.regions(shimmer, args.shimmer_threshold, args.min_area, key="median_shimmer_px")
     if args.video:
-        _swim_video(frames, start, depth, poses, pairing, results, coarse_results, pairs, out / "stabilized.mp4",
+        _swim_video(frames, start, depth, poses, pairing, results, nr_vmax, pairs, out / "stabilized.mp4",
                     source.fps, args.video_span)
 
     def overall(stack_):
@@ -535,6 +563,11 @@ def cmd_swim(args):
                                 "unmatched_frames": unmatched},
               "fine": dict(overall(stack), regions=found[: args.max_regions]),
               "coarse": dict(overall(stack_coarse), regions=found_coarse[: args.max_regions]),
+              "nonrigid": {"median_px": round(float(np.median(nr_known)), 3) if nr_known.size else None,
+                           "median_shimmer_px": round(float(np.median(sh_known)), 3) if sh_known.size else None,
+                           "p95_shimmer_px": round(float(np.percentile(sh_known, 95)), 3) if sh_known.size else None,
+                           "shimmer_threshold_px": args.shimmer_threshold,
+                           "regions": found_shimmer[: args.max_regions]},
               "leftover_world_mean": round(float(leftover_world.mean()), 4),
               "leftover_flow_mean": round(float(leftover_flow.mean()), 4),
               "series": {k: [None if v != v else round(v, 4) for v in vals] for k, vals in series.items()},
@@ -557,16 +590,23 @@ def cmd_swim(args):
               f"{len(part['regions'])} regions above {args.threshold:g}")
         for r in part["regions"][:5]:
             print(f"  box {r['box_xywh']}  area {r['area_fraction'] * 100:5.2f}%  median anchoring {r['median_anchoring']:.2f}")
+    nr = report["nonrigid"]
+    if nr["median_px"] is not None:
+        print(f"non-rigid flow |measured - world|: median {nr['median_px']:.2f} px; shimmer median {nr['median_shimmer_px']:.2f} px, "
+              f"95th percentile {nr['p95_shimmer_px']:.2f} px; {len(nr['regions'])} regions above {args.shimmer_threshold:g} px")
+        for r in nr["regions"][:5]:
+            print(f"  box {r['box_xywh']}  area {r['area_fraction'] * 100:5.2f}%  median shimmer {r['median_shimmer_px']:.2f} px")
     print(f"leftover after the world warp {report['leftover_world_mean']:.4f}, after the flow warp {report['leftover_flow_mean']:.4f}")
 
 
-def _swim_video(frames, start, depth, poses, pairing, results, coarse_results, pairs, path, fps, span):
+def _swim_video(frames, start, depth, poses, pairing, results, nr_vmax, pairs, path, fps, span):
     """A 2x2 video: the recording, the world-stabilized recording (its
-    reference resets every `span` frames), and the fine and coarse anchoring."""
+    reference resets every `span` frames), the fine anchoring and the
+    non-rigid flow."""
     import subprocess
     import cv2
     h, w = frames.shape[1:3]
-    by_frame = {start + t: (r, rc) for t, r, rc in zip(pairs, results, coarse_results)}
+    by_frame = {start + t: r for t, r in zip(pairs, results)}
     command = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w * 2}x{h * 2}",
                "-r", f"{fps:g}", "-i", "-", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-crf", "16", str(path)]
     proc = subprocess.Popen(command, stdin=subprocess.PIPE)
@@ -580,15 +620,15 @@ def _swim_video(frames, start, depth, poses, pairing, results, coarse_results, p
         else:
             stab = viz.to_float(frames[t])
         if i in by_frame:
-            fine = swim.anchoring_overlay(frames[t], by_frame[i][0].anchoring)
-            coarse = swim.anchoring_overlay(frames[t], by_frame[i][1].anchoring)
+            fine = swim.anchoring_overlay(frames[t], by_frame[i].anchoring)
+            coarse = viz.overlay_heat(viz.to_float(frames[t]), np.nan_to_num(swim.nonrigid_size(by_frame[i])), nr_vmax)
         panel = np.concatenate([np.concatenate([viz.to_float(frames[t]), stab], axis=1),
                                 np.concatenate([fine, coarse], axis=1)], axis=0)
         image = np.ascontiguousarray(viz.to_uint8(panel))
         for (x, y), text in (((8, 20), f"recording, frame {i}"),
                              ((w + 8, 20), f"world-stabilized to frame {anchor}: world-fixed holds still"),
                              ((8, h + 20), "anchoring, fine detail: blue world, red viewer"),
-                             ((w + 8, h + 20), "anchoring, coarse shapes")):
+                             ((w + 8, h + 20), f"non-rigid flow |measured - world|, 0 to {nr_vmax:.1f} px")):
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
             cv2.rectangle(image, (x - 4, y - th - 5), (x + tw + 4, y + 6), (12, 14, 18), -1)
             cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
@@ -732,6 +772,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--min-share", type=float, default=0.2, help="share of pairs a pixel must be measured in for the median map")
     q.add_argument("--coarse", type=float, default=3.0, help="blur (px) for the coarse-shape pass (default 3)")
     q.add_argument("--threshold", type=float, default=0.3, help="median anchoring that makes a region (default 0.3)")
+    q.add_argument("--shimmer-threshold", type=float, default=0.5,
+                   help="rms change of the non-rigid flow (px) that makes a shimmer region (default 0.5)")
     q.add_argument("--min-area", type=float, default=0.002, help="smallest region, fraction of the frame")
     q.add_argument("--max-regions", type=int, default=50)
     q.add_argument("--rows", type=int, default=4, help="frame pairs shown in the sheet")

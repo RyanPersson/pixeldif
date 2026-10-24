@@ -27,6 +27,16 @@ to track) and points hidden in the next frame are left out.
                  optical flow would "explain" too, and view-dependent shading
                  (highlights and reflections really do move with the viewer).
 
+    non-rigid    r = m - w wherever the flow is trusted (no separation needed):
+                 motion the camera's move through a rigid world doesn't
+                 explain, in pixels. Its size catches steady slides (swimming,
+                 sway) in any direction, including far away where w and c
+                 nearly agree; its frame-to-frame change at the same pixel,
+                 the *shimmer*, catches heat-haze-like distortion that crawls
+                 with the viewpoint and averages out of any median. A steady
+                 offset (a slightly wrong depth) adds to the size, not to the
+                 shimmer.
+
 The world-stabilized view warps later frames back into a reference frame by
 the world motion: world-fixed content stands still in it, swimming crawls.
 
@@ -39,6 +49,7 @@ metres (1 cm to 10^12 m); code 0 means nothing there (sky).
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import cv2
@@ -203,6 +214,7 @@ class PairResult:
     world: np.ndarray
     valid: np.ndarray
     inside: np.ndarray
+    nonrigid: np.ndarray  # measured - world flow (h, w, 2) px, NaN where the flow isn't trusted
 
 
 class Analyser:
@@ -239,8 +251,10 @@ class Analyser:
         texture = cv2.cornerMinEigenVal(ga.astype(np.float32) / 255.0, 7)
         e = viewer - world
         separation = np.hypot(e[..., 0], e[..., 1])
-        valid = inside & visible & consistent & (texture > self.min_texture) & (separation >= self.min_separation)
+        trusted = inside & visible & consistent & (texture > self.min_texture)
+        valid = trusted & (separation >= self.min_separation)
         d = fwd - world
+        nonrigid = np.where(trusted[..., None], d, np.nan).astype(np.float32)
         with np.errstate(invalid="ignore", divide="ignore"):
             anchoring = (d[..., 0] * e[..., 0] + d[..., 1] * e[..., 1]) / separation ** 2
             across = (d[..., 0] * e[..., 1] - d[..., 1] * e[..., 0]) / separation
@@ -254,7 +268,37 @@ class Analyser:
         if self.blur > 0:
             left_world = cv2.GaussianBlur(left_world, (0, 0), self.blur)
             left_flow = cv2.GaussianBlur(left_flow, (0, 0), self.blur)
-        return PairResult(anchoring, across, left_world, left_flow, separation, fwd, world, valid, inside & visible)
+        return PairResult(anchoring, across, left_world, left_flow, separation, fwd, world, valid, inside & visible,
+                          nonrigid)
+
+
+def nonrigid_size(r: PairResult) -> np.ndarray:
+    return np.hypot(r.nonrigid[..., 0], r.nonrigid[..., 1])
+
+
+def nonrigid_maps(results: list[PairResult], min_share: float = 0.2):
+    """Clip maps of the non-rigid flow r = m - w (px): its median size, and the
+    shimmer, the root-mean-square change of r between successive pairs at each
+    pixel. Also the per-pair median shimmer (NaN for the first pair)."""
+    sizes = np.stack([nonrigid_size(r) for r in results])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        size = np.nanmedian(sizes, axis=0)
+        size[np.isfinite(sizes).sum(axis=0) < max(2, int(min_share * len(results)))] = np.nan
+        shimmer = np.full(size.shape, np.nan, np.float32)
+        per_pair = [float("nan")]
+        if len(results) > 1:
+            total = np.zeros(size.shape, np.float64)
+            count = np.zeros(size.shape, np.int32)
+            for a, b in zip(results, results[1:]):
+                change = np.hypot(b.nonrigid[..., 0] - a.nonrigid[..., 0], b.nonrigid[..., 1] - a.nonrigid[..., 1])
+                known = np.isfinite(change)
+                total[known] += change[known] ** 2
+                count += known
+                per_pair.append(float(np.median(change[known])) if known.any() else float("nan"))
+            shimmer = np.sqrt(total / np.maximum(count, 1)).astype(np.float32)
+            shimmer[count < max(1, int(min_share * (len(results) - 1)))] = np.nan
+    return size.astype(np.float32), shimmer, per_pair
 
 
 def stabilize(frame: np.ndarray, depth_ref: np.ndarray, ref: Pose, pose: Pose):
@@ -300,12 +344,13 @@ def arrows(frame: np.ndarray, measured: np.ndarray, world: np.ndarray, valid: np
     return out
 
 
-def crop_box(anchoring: np.ndarray, size: tuple[int, int]) -> tuple[int, int, int, int]:
-    """The window of `size` (w, h) with the most viewer-anchored pixels."""
+def crop_box(anchoring: np.ndarray, size: tuple[int, int], threshold: float = 0.5) -> tuple[int, int, int, int]:
+    """The window of `size` (w, h) with the most pixels above `threshold`
+    (by default the most viewer-anchored ones)."""
     w, h = size
     H, W = anchoring.shape
     w, h = min(w, W), min(h, H)
-    hot = (np.nan_to_num(anchoring, nan=0.0) > 0.5).astype(np.float32)
+    hot = (np.nan_to_num(anchoring, nan=0.0) > threshold).astype(np.float32)
     score = cv2.boxFilter(hot, -1, (w, h), normalize=False, borderType=cv2.BORDER_CONSTANT)
     score[:, : w // 2] = score[:, W - (w - w // 2):] = -1
     score[: h // 2] = score[H - (h - h // 2):] = -1
@@ -313,8 +358,10 @@ def crop_box(anchoring: np.ndarray, size: tuple[int, int]) -> tuple[int, int, in
     return int(x - w // 2), int(y - h // 2), w, h
 
 
-def regions(anchoring: np.ndarray, threshold: float, min_area: float, merge: int = 9) -> list[dict]:
-    """Connected areas whose median anchoring is above `threshold`."""
+def regions(anchoring: np.ndarray, threshold: float, min_area: float, merge: int = 9,
+            key: str = "median_anchoring") -> list[dict]:
+    """Connected areas whose median anchoring (or other map, named `key` in
+    the result) is above `threshold`."""
     hot = (np.nan_to_num(anchoring, nan=-1.0) > threshold).astype(np.uint8)
     joined = cv2.morphologyEx(hot, cv2.MORPH_CLOSE, np.ones((merge, merge), np.uint8))
     n, labels, stats, _ = cv2.connectedComponentsWithStats(joined, connectivity=8)
@@ -326,8 +373,8 @@ def regions(anchoring: np.ndarray, threshold: float, min_area: float, merge: int
             continue
         x, y, bw, bh = (int(v) for v in stats[k, :4])
         out.append({"box_xywh": [x, y, bw, bh], "area_fraction": round(area, 5),
-                    "median_anchoring": round(float(np.median(anchoring[region])), 3)})
-    return sorted(out, key=lambda r: -r["area_fraction"] * r["median_anchoring"])
+                    key: round(float(np.median(anchoring[region])), 3)})
+    return sorted(out, key=lambda r: -r["area_fraction"] * r[key])
 
 
 def timeline(series: dict, x: list[float], x_label: str, path, log_x: bool = False, invert_x: bool = False,
@@ -354,8 +401,14 @@ def timeline(series: dict, x: list[float], x_label: str, path, log_x: bool = Fal
     axes[1].plot(x, series["leftover_flow"], color="#9be08a", lw=1.0, label="after flow warp (pops)")
     axes[1].set_ylabel("leftover", color="#e0e0e0")
     axes[1].legend(facecolor="#1a1d22", labelcolor="#e0e0e0", fontsize=8, loc="upper left")
-    axes[2].plot(x, series["measured_fraction"], color="#c8a0ff", lw=1.2)
-    axes[2].set_ylabel("measurable\nshare of frame", color="#e0e0e0")
+    if "shimmer_px" in series:
+        axes[2].plot(x, series["nonrigid_px"], color="#ff8fd0", lw=1.2, label="median non-rigid flow |m - w|")
+        axes[2].plot(x, series["shimmer_px"], color="#ffe08a", lw=1.0, label="median shimmer (change since the last pair)")
+        axes[2].set_ylabel("non-rigid\nflow (px)", color="#e0e0e0")
+        axes[2].legend(facecolor="#1a1d22", labelcolor="#e0e0e0", fontsize=8, loc="upper left")
+    else:
+        axes[2].plot(x, series["measured_fraction"], color="#c8a0ff", lw=1.2)
+        axes[2].set_ylabel("measurable\nshare of frame", color="#e0e0e0")
     axes[2].set_xlabel(x_label, color="#e0e0e0")
     if invert_x:
         axes[2].invert_xaxis()
